@@ -56,7 +56,10 @@ const events = [
 const navItems = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'exchange', label: 'Resource exchange', icon: PackageOpen, count: 12 },
+  { id: 'announcements', label: 'Announcements', icon: Bell },
   { id: 'events', label: 'Events calendar', icon: CalendarDays, count: 4 },
+  { id: 'lost-found', label: 'Lost & Found', icon: Compass },
+  { id: 'maintenance', label: 'Maintenance', icon: Settings },
   { id: 'profile', label: 'My profile', icon: UserRound },
 ]
 
@@ -81,6 +84,9 @@ function App() {
   const [clubs, setClubs] = useState([])
   const [registered, setRegistered] = useState([])
   const [offers, setOffers] = useState([])
+  const [announcements, setAnnouncements] = useState([])
+  const [lostFoundItems, setLostFoundItems] = useState([])
+  const [maintenanceRequests, setMaintenanceRequests] = useState([])
   const [profile, setProfile] = useState(null)
   const [toast, setToast] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -100,12 +106,23 @@ function App() {
         if (!token) return
         const auth = await apiFetch('/auth/me')
         setProfile(auth.user)
-        const [listingData, eventData, offerData, clubData] = await Promise.all([apiFetch('/listings'), apiFetch('/events'), apiFetch('/offers/my'), apiFetch('/clubs')])
+        const [listingData, eventData, offerData, clubData, announcementData, lostFoundData, maintenanceData] = await Promise.all([
+          apiFetch('/listings'),
+          apiFetch('/events'),
+          apiFetch('/offers/my'),
+          apiFetch('/clubs'),
+          apiFetch('/announcements'),
+          apiFetch('/lost-found'),
+          apiFetch('/maintenance'),
+        ])
         setListings(listingData.listings)
         setEvents(eventData.events)
         setRegistered(eventData.events.filter(event => event.registered).map(event => event.id))
         setOffers(offerData.offers)
         setClubs(clubData.clubs)
+        setAnnouncements(announcementData.announcements)
+        setLostFoundItems(lostFoundData.items)
+        setMaintenanceRequests(maintenanceData.requests)
       } catch (error) {
         setLoadError(error.message)
       } finally {
@@ -234,15 +251,14 @@ function App() {
   if (loadError) return <div className="app-loading"><div className="brand-mark"><CircleHelp size={17} /></div><strong>CampusLoop is offline</strong><span>{loadError}</span><button className="button button-dark" onClick={() => window.location.reload()}>Try again</button></div>
   if (!profile) return <LoginScreen />
 
-  const lostAndFoundMode = activeView === 'lost-found'
   return (
-    <div className={`app-shell ${activeView === 'overview' ? 'overview-mode' : ''} ${activeView === 'exchange' ? 'exchange-mode' : ''} ${activeView === 'events' ? 'events-mode' : ''} ${activeView === 'profile' ? 'profile-mode' : ''} ${lostAndFoundMode ? 'lost-found-mode' : ''}`}>
-      {activeView === 'overview' || activeView === 'profile' ? null : lostAndFoundMode ? <div className="lost-found-backdrop" aria-hidden="true" /> : <SiteVideoBackground />}
+    <div className={`app-shell ${activeView === 'overview' ? 'overview-mode' : ''} ${activeView === 'exchange' ? 'exchange-mode' : ''} ${activeView === 'events' ? 'events-mode' : ''} ${activeView === 'profile' ? 'profile-mode' : ''}`}>
+      {activeView === 'overview' || activeView === 'profile' ? null : <SiteVideoBackground />}
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
       <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
         <div className="brand"><div className="brand-mark"><Leaf size={17} strokeWidth={2.5} /></div><span>campus<span>loop</span></span></div>
-        <div className="campus-switcher"><div className="campus-avatar">NC</div><div><strong>North Campus</strong><span>Student space</span></div><ChevronRight size={15} /></div>
+        <div className="campus-switcher"><div className="campus-avatar">NITW</div><div><strong>NITW</strong><span>Student space</span></div><ChevronRight size={15} /></div>
         <p className="nav-label">Workspace</p>
         <nav>{navItems.map(({ id, label, icon: Icon, count }) => <button key={id} className={`nav-item ${activeView === id ? 'active' : ''}`} onClick={() => navigate(id)}><Icon size={18} /><span>{label}</span>{count && <em>{count}</em>}</button>)}</nav>
         <div className="sidebar-spacer" />
@@ -254,7 +270,7 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setSidebarOpen(value => !value)} aria-label="Toggle navigation"><Menu size={20} /></button>
-          <div className="breadcrumb"><span>North Campus</span><ChevronRight size={14} /><strong>{navItems.find(item => item.id === activeView)?.label || 'Overview'}</strong></div>
+          <div className="breadcrumb"><span>NITW</span><ChevronRight size={14} /><strong>{navItems.find(item => item.id === activeView)?.label || 'Overview'}</strong></div>
           <div className="top-actions"><div className="search-mini"><Search size={16} /><input placeholder="Search campusloop" onChange={(event) => event.target.value && navigate('exchange')} /></div><button className="icon-button notification-button" onClick={() => setShowNotifications(!showNotifications)} aria-label="Notifications"><Bell size={18} /><i /></button><button className="avatar avatar-coral top-avatar" onClick={() => navigate('profile')}>{profile.name.split(' ').map(part => part[0]).join('')}</button></div>
           {showNotifications && <div className="notification-pop"><div className="pop-header"><strong>Notifications</strong><span>2 new</span></div><div className="notification-row"><div className="notification-dot green" /><span><strong>Meera</strong> saved your calculator listing.<small>8 minutes ago</small></span></div><div className="notification-row"><div className="notification-dot orange" /><span><strong>Open mic</strong> is almost full.<small>Yesterday</small></span></div></div>}
         </header>
@@ -262,7 +278,42 @@ function App() {
         <div className="page-wrap">
           {activeView === 'overview' && <Overview navigate={navigate} />}
           {activeView === 'exchange' && <Exchange listings={listings} onSave={toggleSave} onCreate={() => setShowCreate(true)} onOffer={setSelectedListing} currentUserId={profile.id} />}
+          {activeView === 'announcements' && <AnnouncementsPage announcements={announcements} isAdmin={profile.role === 'admin'} onCreate={async (draft) => {
+            const result = await apiFetch('/announcements', { method: 'POST', body: JSON.stringify(draft) })
+            setAnnouncements(items => [result.announcement, ...items])
+            notify('Announcement posted', Bell)
+          }} onDelete={async (id) => {
+            await apiFetch(`/announcements/${id}`, { method: 'DELETE' })
+            setAnnouncements(items => items.filter(item => item.id !== id))
+            notify('Announcement removed', Bell)
+          }} />}
           {activeView === 'events' && <Events events={events} registered={registered} clubs={clubs} onRegister={toggleRegistration} onOpen={setSelectedEvent} onCreate={() => setShowEventCreate(true)} onRemove={removeEvent} />}
+          {activeView === 'lost-found' && <LostFoundPage items={lostFoundItems} currentUserId={profile.id} isAdmin={profile.role === 'admin'} onCreate={async (draft) => {
+            const result = await apiFetch('/lost-found', { method: 'POST', body: JSON.stringify(draft) })
+            setLostFoundItems(items => [result.item, ...items])
+            notify('Lost or found item reported', Compass)
+          }} onResolve={async (id) => {
+            const result = await apiFetch(`/lost-found/${id}/resolve`, { method: 'PUT' })
+            setLostFoundItems(items => items.map(item => item.id === id ? { ...item, status: result.item.status } : item))
+            notify('Report marked as resolved', Check)
+          }} onDelete={async (id) => {
+            await apiFetch(`/lost-found/${id}`, { method: 'DELETE' })
+            setLostFoundItems(items => items.filter(item => item.id !== id))
+            notify('Report removed', Compass)
+          }} />}
+          {activeView === 'maintenance' && <MaintenancePage requests={maintenanceRequests} currentUserId={profile.id} isAdmin={profile.role === 'admin'} onCreate={async (draft) => {
+            const result = await apiFetch('/maintenance', { method: 'POST', body: JSON.stringify(draft) })
+            setMaintenanceRequests(items => [result.request, ...items])
+            notify('Maintenance request submitted', Settings)
+          }} onUpdateStatus={async (id, status) => {
+            const result = await apiFetch(`/maintenance/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) })
+            setMaintenanceRequests(items => items.map(item => item.id === id ? { ...item, status: result.request.status } : item))
+            notify('Status updated', Check)
+          }} onConfirmResolved={async (id) => {
+            const result = await apiFetch(`/maintenance/${id}/confirm`, { method: 'PUT' })
+            setMaintenanceRequests(items => items.map(item => item.id === id ? { ...item, confirmedByUserAt: result.request.confirmedByUserAt } : item))
+            notify('Resolution confirmed', Check)
+          }} />}
           {activeView === 'profile' && <Profile profile={profile} onSave={updateProfile} clubs={clubs} onRequestClub={requestClubMembership} onApproveClubRequest={approveClubMembership} listings={listings} registered={registered} offers={offers} navigate={navigate} />}
           {activeView === 'profile' && <RequestHistory listings={listings.filter(item => item.ownerId === profile.id)} offers={offers} onCloseRequest={closeListing} />}
         </div>
@@ -421,7 +472,7 @@ function MainframeVideo() {
 
 function LoginScreen() {
   const [mode, setMode] = useState('login')
-  const [form, setForm] = useState({ name: '', branch: '', year: '', hostel: '', phone: '', email: 'maya.patel@student.nitw.ac.in', password: 'campusloop' })
+  const [form, setForm] = useState({ name: '', branch: '', year: '', hostel: '', phone: '', email: '', password: '', adminSetupKey: '' })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -447,8 +498,7 @@ function LoginScreen() {
       <aside className="mainframe-auth" id="auth">
         <p className="mainframe-auth-kicker">CAMPUSLOOP / {mode === 'login' ? 'STUDENT ACCESS' : 'NEW MEMBER'}</p>
         <h2>{mode === 'login' ? 'Welcome back.' : 'Join the loop.'}</h2>
-        <form onSubmit={submit}>{mode === 'register' && <><label>Full name<input value={form.name} onChange={event => update('name', event.target.value)} placeholder="Maya Patel" required /></label><label>Branch<input value={form.branch} onChange={event => update('branch', event.target.value)} placeholder="Computer Science" required /></label><label>Year<input value={form.year} onChange={event => update('year', event.target.value)} placeholder="e.g. 3" required /></label><label>Hostel (optional)<input value={form.hostel} onChange={event => update('hostel', event.target.value)} placeholder="e.g. Godavari" /></label><label>Phone number<input type="tel" autoComplete="tel" value={form.phone} onChange={event => update('phone', event.target.value)} placeholder="+91 98765 43210" minLength={7} maxLength={25} pattern="\+?[0-9().\-\s]{7,25}" required /></label></>}<label>Campus email<input type="email" value={form.email} onChange={event => update('email', event.target.value)} placeholder="you@student.nitw.ac.in" required /></label>{mode === 'register' && <small className="registration-email-hint">Use your @student.nitw.ac.in email address.</small>}<label>Password<input type="password" value={form.password} onChange={event => update('password', event.target.value)} minLength={6} required /></label>{error && <p className="mainframe-form-error">{error}</p>}<button className="mainframe-submit" disabled={submitting}>{submitting ? 'Connecting...' : mode === 'login' ? 'Enter CampusLoop' : 'Create account'}<ArrowUpRight size={15} /></button></form>
-        <div className="mainframe-demo"><span>Evaluation access</span><strong>maya.patel@student.nitw.ac.in</strong><small>Password: campusloop</small></div>
+        <form onSubmit={submit}>{mode === 'register' && <><label>Full name<input value={form.name} onChange={event => update('name', event.target.value)} placeholder="Maya Patel" required /></label><label>Branch<input value={form.branch} onChange={event => update('branch', event.target.value)} placeholder="Computer Science" required /></label><label>Year<input value={form.year} onChange={event => update('year', event.target.value)} placeholder="e.g. 3" required /></label><label>Hostel (optional)<input value={form.hostel} onChange={event => update('hostel', event.target.value)} placeholder="e.g. Godavari" /></label><label>Phone number<input type="tel" autoComplete="tel" value={form.phone} onChange={event => update('phone', event.target.value)} placeholder="+91 98765 43210" minLength={7} maxLength={25} pattern="\+?[0-9().\-\s]{7,25}" required /></label><label>Administrator setup key (if configured)<input type="password" autoComplete="off" value={form.adminSetupKey} onChange={event => update('adminSetupKey', event.target.value)} /></label></>}<label>Campus email<input type="email" value={form.email} onChange={event => update('email', event.target.value)} placeholder="you@student.nitw.ac.in" required /></label>{mode === 'register' && <small className="registration-email-hint">Use your @student.nitw.ac.in email address.</small>}<label>Password<input type="password" value={form.password} onChange={event => update('password', event.target.value)} minLength={6} required /></label>{error && <p className="mainframe-form-error">{error}</p>}<button className="mainframe-submit" disabled={submitting}>{submitting ? 'Connecting...' : mode === 'login' ? 'Enter CampusLoop' : 'Create account'}<ArrowUpRight size={15} /></button></form>
         <button className="mainframe-switch" onClick={() => { const nextMode = mode === 'login' ? 'register' : 'login'; setMode(nextMode); setError(''); if (nextMode === 'register') update('email', '') }}>{mode === 'login' ? 'Create a student account' : 'Back to sign in'}</button>
       </aside>
     </section>
@@ -457,6 +507,98 @@ function LoginScreen() {
 
 function PageIntro({ eyebrow, title, body, action, onAction }) {
   return <div className="page-intro"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1>{body && <p className="intro-copy">{body}</p>}</div>{action && <button className="button button-dark" onClick={onAction}>{action}<Plus size={16} /></button>}</div>
+}
+
+function AnnouncementsPage({ announcements, isAdmin, onCreate, onDelete }) {
+  const [form, setForm] = useState({ title: '', category: 'General', content: '', pinned: false })
+  const [filter, setFilter] = useState('All')
+  const [query, setQuery] = useState('')
+  const categories = ['All', ...new Set((announcements || []).map(item => item.category || 'General'))]
+  const visible = (announcements || []).filter(item =>
+    (filter === 'All' || item.category === filter)
+    && `${item.title} ${item.content} ${item.author || ''}`.toLowerCase().includes(query.toLowerCase()),
+  )
+
+  return <div className="module-shell">
+    <PageIntro eyebrow="CAMPUS ANNOUNCEMENTS" title="Stay in the loop." body="Official notices, club updates, and important reminders for campus life." />
+    <div className="module-toolbar">
+      <div className="filter-pills">
+        {categories.map(category => <button key={category} type="button" className={filter === category ? 'selected' : ''} onClick={() => setFilter(category)}>{category}</button>)}
+      </div>
+      <label className="search-field"><Search size={16} /><input aria-label="Search announcements" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search announcements" /></label>
+    </div>
+    <div className="details-grid">
+      <div className="panel-block">
+        <h3 className="panel-title">Latest notices</h3>
+        <div className="stack-list">
+          {visible.length === 0 ? <div className="empty-state"><strong>No announcements yet</strong><span>Post the first campus notice.</span></div> : visible.map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.category || 'General'}</span>{item.pinned && <span className="chip accent">Pinned</span>}</div><h4>{item.title}</h4><p>{item.content}</p><div className="detail-footer"><small>{item.author || 'Campus admin'}</small><small>{new Date(item.createdAt).toLocaleDateString()}</small>{isAdmin && onDelete && <button type="button" className="text-button" onClick={() => onDelete(item.id)}>Delete</button>}</div></article>)}
+        </div>
+      </div>
+      {isAdmin && <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); await onCreate(form); setForm({ title: '', category: 'General', content: '', pinned: false }) }}>
+        <h3 className="panel-title">Post a notice</h3>
+        <label>Title<input value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Exam schedule update" required /></label>
+        <label>Category<select value={form.category} onChange={event => setForm(current => ({ ...current, category: event.target.value }))}><option>General</option><option>Academic</option><option>Administrative</option><option>Club</option><option>Health</option></select></label>
+        <label>Details<textarea value={form.content} onChange={event => setForm(current => ({ ...current, content: event.target.value }))} rows="5" placeholder="Share the update or reminder here..." required /></label>
+        <label className="checkbox-row"><input type="checkbox" checked={form.pinned} onChange={event => setForm(current => ({ ...current, pinned: event.target.checked }))} /> Pin this announcement</label>
+        <button type="submit" className="button button-dark">Publish</button>
+      </form>}
+    </div>
+  </div>
+}
+
+function LostFoundPage({ items, currentUserId, isAdmin, onCreate, onResolve, onDelete }) {
+  const [form, setForm] = useState({ title: '', type: 'lost', description: '', location: '', date: '', image: '' })
+  const [filter, setFilter] = useState('all')
+  const visible = items.filter(item => filter === 'all' || item.type === filter)
+
+  return <div className="module-shell">
+    <PageIntro eyebrow="LOST & FOUND" title="Help campus items find home." body="Report a lost item or match a found one with its owner." />
+    <div className="module-toolbar"><div className="filter-pills"><button type="button" className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')}>All</button><button type="button" className={filter === 'lost' ? 'selected' : ''} onClick={() => setFilter('lost')}>Lost</button><button type="button" className={filter === 'found' ? 'selected' : ''} onClick={() => setFilter('found')}>Found</button></div></div>
+    <div className="details-grid">
+      <div className="panel-block">
+        <h3 className="panel-title">Recent reports</h3>
+        <div className="stack-list">
+          {visible.length === 0 ? <div className="empty-state"><strong>No reports yet</strong><span>Start with the first lost or found post.</span></div> : visible.map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.type}</span><span className={`chip ${item.status === 'resolved' ? 'muted' : 'accent'}`}>{item.status === 'resolved' ? 'Resolved' : 'Open'}</span></div><h4>{item.title}</h4>{item.image && <img src={item.image} alt={item.title} className="detail-image" />}<p>{item.description}</p><div className="meta-row"><span>{item.location}</span><span>{item.date || 'Date unspecified'}</span></div><div className="detail-footer"><span>{item.contactEmail ? <a href={`mailto:${item.contactEmail}`}>{item.contactName || item.contactEmail}</a> : item.contactName || 'Campus student'}{item.contactPhone && <> · <a href={`tel:${item.contactPhone}`}>{item.contactPhone}</a></>}</span>{(item.reporterId === currentUserId || isAdmin) && item.status !== 'resolved' && <button type="button" className="text-button" onClick={() => onResolve(item.id)}>Resolve</button>} {(item.reporterId === currentUserId || isAdmin) && <button type="button" className="text-button" onClick={() => onDelete(item.id)}>Delete</button>}</div></article>)}
+        </div>
+      </div>
+      <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); await onCreate(form); setForm({ title: '', type: 'lost', description: '', location: '', date: '', image: '' }) }}>
+        <h3 className="panel-title">Report item</h3>
+        <label>Item name<input value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Blue water bottle" required /></label>
+        <label>Type<select value={form.type} onChange={event => setForm(current => ({ ...current, type: event.target.value }))}><option value="lost">Lost item</option><option value="found">Found item</option></select></label>
+        <label>Location<input value={form.location} onChange={event => setForm(current => ({ ...current, location: event.target.value }))} placeholder="Library second floor" required /></label>
+        <label>Date<input type="date" value={form.date} onChange={event => setForm(current => ({ ...current, date: event.target.value }))} /></label>
+        <label>Image URL<input value={form.image} onChange={event => setForm(current => ({ ...current, image: event.target.value }))} placeholder="https://..." /></label>
+        <label>Details<textarea value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))} rows="4" placeholder="Describe the item and any identifying details." required /></label>
+        <button type="submit" className="button button-dark">Submit report</button>
+      </form>
+    </div>
+  </div>
+}
+
+function MaintenancePage({ requests, currentUserId, isAdmin, onCreate, onUpdateStatus, onConfirmResolved }) {
+  const [form, setForm] = useState({ title: '', category: 'Electrical', location: '', description: '', image: '' })
+  const statuses = ['Submitted', 'In Progress', 'Resolved']
+
+  return <div className="module-shell">
+    <PageIntro eyebrow="CAMPUS MAINTENANCE" title="Submit and track help requests." body="Report facilities issues and track them through submission to resolution." />
+    <div className="details-grid">
+      <div className="panel-block">
+        <h3 className="panel-title">Open requests</h3>
+        <div className="stack-list">
+          {(requests || []).length === 0 ? <div className="empty-state"><strong>No maintenance requests</strong><span>Report the next campus issue.</span></div> : (requests || []).map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.category}</span><span className={`chip ${item.status === 'Resolved' ? 'muted' : 'accent'}`}>{item.status}</span></div><h4>{item.title}</h4>{item.image && <img src={item.image} alt={item.title} className="detail-image" />}<p>{item.description}</p><div className="meta-row"><span>{item.location}</span><span>{new Date(item.createdAt).toLocaleDateString()}</span></div><div className="detail-footer"><small>{item.userName || 'Student'}{item.confirmedByUserAt ? ' · Resolution confirmed' : ''}</small>{isAdmin && <div className="status-actions">{statuses.filter(status => status !== item.status).map(status => <button key={status} type="button" className="text-button" onClick={() => onUpdateStatus(item.id, status)}>{status}</button>)}</div>}{item.userId === currentUserId && item.status === 'Resolved' && !item.confirmedByUserAt && <button type="button" className="text-button" onClick={() => onConfirmResolved(item.id)}>Confirm resolved</button>}</div></article>)}
+        </div>
+      </div>
+      <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); await onCreate(form); setForm({ title: '', category: 'Electrical', location: '', description: '', image: '' }) }}>
+        <h3 className="panel-title">Submit request</h3>
+        <label>Issue title<input value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Broken corridor light" required /></label>
+        <label>Category<select value={form.category} onChange={event => setForm(current => ({ ...current, category: event.target.value }))}><option>Electrical</option><option>Water</option><option>Cleanliness</option><option>Furniture</option><option>Internet</option></select></label>
+        <label>Location<input value={form.location} onChange={event => setForm(current => ({ ...current, location: event.target.value }))} placeholder="Block A, corridor 2" required /></label>
+        <label>Image URL<input value={form.image} onChange={event => setForm(current => ({ ...current, image: event.target.value }))} placeholder="https://..." /></label>
+        <label>Details<textarea value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))} rows="4" placeholder="Describe the issue and when it started." required /></label>
+        <button type="submit" className="button button-dark">Send request</button>
+      </form>
+    </div>
+  </div>
 }
 
 function Overview({ navigate }) {
@@ -492,7 +634,13 @@ function PhilosophySection() {
 }
 
 function ServicesSection({ navigate }) {
-  const services = [{ tag: 'Module 01', title: 'Resource Exchange', description: 'Request books, study gear, electronics, and more. Students who have what you need can message you with an offer, and you can close your request once it is fulfilled.', video: 'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260314_131748_f2ca2a28-fed7-44c8-b9a9-bd9acdd5ec31.mp4', view: 'exchange' }, { tag: 'Module 02', title: 'Events Calendar', description: 'See what is happening across campus, explore event details, and register for talks, runs, club activities, and community moments.', video: 'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260324_151826_c7218672-6e92-402c-9e45-f1e0f454bdc4.mp4', view: 'events' }]
+  const services = [
+    { tag: 'Module 01', title: 'Resource Exchange', description: 'Request books, study gear, electronics, and more. Students who have what you need can message you with an offer, and you can close your request once it is fulfilled.', video: 'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260314_131748_f2ca2a28-fed7-44c8-b9a9-bd9acdd5ec31.mp4', view: 'exchange' },
+    { tag: 'Module 02', title: 'Announcements', description: 'Keep up with academic updates, administrative notices, club announcements, and standout campus reminders.', video: 'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260324_151826_c7218672-6e92-402c-9e45-f1e0f454bdc4.mp4', view: 'announcements' },
+    { tag: 'Module 03', title: 'Events Calendar', description: 'See what is happening across campus, explore event details, and register for talks, runs, club activities, and community moments.', video: 'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260324_151826_c7218672-6e92-402c-9e45-f1e0f454bdc4.mp4', view: 'events' },
+    { tag: 'Module 04', title: 'Lost & Found', description: 'Post a missing item or report a recovered one to reunite belongings with their owners across campus.', video: 'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260405_074625_a81f018a-956b-43fb-9aee-4d1508e30e6a.mp4', view: 'lost-found' },
+    { tag: 'Module 05', title: 'Maintenance', description: 'Report broken facilities, water issues, damaged furniture, and electrical problems so they can be tracked to resolution.', video: 'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260405_074625_a81f018a-956b-43fb-9aee-4d1508e30e6a.mp4', view: 'maintenance' },
+  ]
   return <section className="asme-section asme-services" id="asme-services"><Reveal className="asme-services-heading"><h2>Find your way around</h2><span>CampusLoop modules</span></Reveal><div className="asme-service-grid">{services.map((service, index) => <Reveal key={service.title} className="liquid-glass asme-service-card" transition={{ duration: .8, delay: index * .15 }}><div className="asme-service-video"><video src={service.video} muted autoPlay loop playsInline preload="auto" /><div /></div><div className="asme-service-body"><div className="asme-service-top"><p className="asme-label">{service.tag}</p><button className="liquid-glass" aria-label={`Open ${service.title}`} onClick={() => navigate(service.view)}><ArrowUpRight size={17} /></button></div><h3>{service.title}</h3><p>{service.description}</p></div></Reveal>)}</div></section>
 }
 
@@ -941,7 +1089,7 @@ function OfferModal({ listing, onClose, onSubmit }) {
   </form></div>
 }
 
-function AuthModal({ profile, onClose, onSignedOut }) { return <div className="modal-backdrop"><div className="modal auth-modal"><button className="modal-close" onClick={onClose}><X size={18} /></button><div className="auth-orb"><Leaf size={22} /></div><p className="eyebrow">CAMPUSLOOP ACCOUNT</p><h2>Welcome back, {profile.name.split(' ')[0]}.</h2><p className="modal-copy">Your account is securely connected to the CampusLoop API. Your listings, registrations, and profile changes are saved for your next visit.</p><div className="signed-in"><div className="avatar avatar-coral">{profile.name.split(' ').map(part => part[0]).join('')}</div><span><strong>{profile.email}</strong><small>Student account · North Campus</small></span><Check size={18} /></div><button className="button button-dark full-button" onClick={onClose}>Continue to CampusLoop <ArrowUpRight size={16} /></button><button className="sign-out" onClick={onSignedOut}>Sign out</button></div></div> }
+function AuthModal({ profile, onClose, onSignedOut }) { return <div className="modal-backdrop"><div className="modal auth-modal"><button className="modal-close" onClick={onClose}><X size={18} /></button><div className="auth-orb"><Leaf size={22} /></div><p className="eyebrow">CAMPUSLOOP ACCOUNT</p><h2>Welcome back, {profile.name.split(' ')[0]}.</h2><p className="modal-copy">Your account is securely connected to the CampusLoop API. Your listings, registrations, and profile changes are saved for your next visit.</p><div className="signed-in"><div className="avatar avatar-coral">{profile.name.split(' ').map(part => part[0]).join('')}</div><span><strong>{profile.email}</strong><small>Student account · NITW</small></span><Check size={18} /></div><button className="button button-dark full-button" onClick={onClose}>Continue to CampusLoop <ArrowUpRight size={16} /></button><button className="sign-out" onClick={onSignedOut}>Sign out</button></div></div> }
 
 function EventModal({ event, registered, canViewGuestList, onClose, onRegister }) {
   const [guestList, setGuestList] = useState(null)

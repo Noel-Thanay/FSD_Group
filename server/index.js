@@ -1,7 +1,10 @@
+import 'dotenv/config'
 import cors from 'cors'
 import express from 'express'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import { MongoClient } from 'mongodb'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,7 +12,30 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataPath = path.join(__dirname, 'data.json')
 const port = Number(process.env.PORT || 4000)
-const jwtSecret = process.env.JWT_SECRET || 'campusloop-local-development-secret'
+const mongoUri = process.env.MONGODB_URI
+const databaseName = process.env.MONGODB_DB || 'campusloop'
+const jwtSecret = process.env.JWT_SECRET
+const adminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase()
+const adminSetupKey = process.env.ADMIN_SETUP_KEY || ''
+const collectionNames = [
+  'users',
+  'listings',
+  'events',
+  'registrations',
+  'requests',
+  'offers',
+  'clubs',
+  'clubMemberships',
+  'clubJoinRequests',
+  'announcements',
+  'lostFound',
+  'maintenanceRequests',
+  'reviews',
+]
+const snapshotRevisions = new WeakMap()
+let database
+let stateCollection
+let mongoClient
 
 const clubs = [
   { id: 'yrc', name: 'Youth Red Cross (YRC)' },
@@ -19,16 +45,7 @@ const clubs = [
 ]
 
 const seed = {
-  users: [{
-    id: 'user-maya',
-    name: 'Maya Patel',
-    branch: 'Computer Science',
-    year: '3',
-    hostel: '',
-    email: 'maya.patel@student.nitw.ac.in',
-    passwordHash: bcrypt.hashSync('campusloop', 10),
-    role: 'student',
-  }],
+  users: [],
   listings: [
     { id: 'listing-1', title: 'Casio fx-991EX Calculator', category: 'Study gear', condition: 'Like new', mode: 'Borrow', price: 'Free', owner: 'Nisha Rao', initials: 'NR', color: 'coral', image: 'https://images.unsplash.com/photo-1616628182503-47a55d7f2d91?auto=format&fit=crop&w=900&q=80', savedBy: [] },
     { id: 'listing-2', title: 'Introduction to Algorithms', category: 'Books', condition: 'Good', mode: 'Exchange', price: 'For a book', owner: 'Arjun Mehta', initials: 'AM', color: 'blue', image: 'https://images.unsplash.com/photo-1532012197267-da84d127e765?auto=format&fit=crop&w=900&q=80', savedBy: ['user-maya'] },
@@ -45,16 +62,24 @@ const seed = {
   requests: [],
   offers: [],
   clubs,
-  clubMemberships: clubs.map(club => ({ clubId: club.id, userId: 'user-maya', joinedAt: new Date().toISOString() })),
+  clubMemberships: [],
   clubJoinRequests: [],
+  announcements: [{
+    id: 'announcement-welcome',
+    title: 'CampusLoop launch week',
+    category: 'General',
+    content: 'Welcome to CampusLoop. Check the student notice board for updates on club activities, faculty announcements, and local events this week.',
+    pinned: true,
+    author: 'Campus admin',
+    createdAt: new Date().toISOString(),
+  }],
+  lostFound: [],
+  maintenanceRequests: [],
+  reviews: [],
 }
 
-function readData() {
-  if (!fs.existsSync(dataPath)) {
-    const initialData = { ...seed, users: seed.users.map(user => ({ ...user, createdAt: new Date().toISOString() })) }
-    writeData(initialData)
-  }
-  const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'))
+function normalizeData(data) {
+  data.users ||= []
   let migrated = false
   const seenEmails = new Set()
   for (const user of data.users) {
@@ -102,19 +127,129 @@ function readData() {
     migrated = true
   }
   if (!Array.isArray(data.clubMemberships)) {
-    data.clubMemberships = clubs.map(club => ({ clubId: club.id, userId: 'user-maya', joinedAt: new Date().toISOString() }))
+    data.clubMemberships = []
     migrated = true
   }
   if (!Array.isArray(data.clubJoinRequests)) {
     data.clubJoinRequests = []
     migrated = true
   }
-  if (migrated) writeData(data)
-  return data
+  if (!Array.isArray(data.announcements)) {
+    data.announcements = []
+    migrated = true
+  }
+  if (!Array.isArray(data.lostFound)) {
+    data.lostFound = []
+    migrated = true
+  }
+  if (!Array.isArray(data.maintenanceRequests)) {
+    data.maintenanceRequests = []
+    migrated = true
+  }
+  if (!Array.isArray(data.reviews)) {
+    data.reviews = []
+    migrated = true
+  }
+  return { data, migrated }
 }
 
-function writeData(data) {
-  fs.writeFileSync(dataPath, JSON.stringify(data, null, 2))
+function localDataForMigration() {
+  if (fs.existsSync(dataPath)) {
+    const parsed = JSON.parse(fs.readFileSync(dataPath, 'utf8'))
+    return normalizeData(parsed).data
+  }
+  const initialData = structuredClone(seed)
+  initialData.users = []
+  initialData.clubMemberships = []
+  return normalizeData(initialData).data
+}
+
+function mongoDocument(collectionName, item, index) {
+  let id = item.id
+  if (!id && collectionName === 'registrations') id = `${item.eventId}:${item.userId}`
+  if (!id && collectionName === 'clubMemberships') id = `${item.clubId}:${item.userId}`
+  return { ...item, _id: String(id || `${collectionName}:${index}`) }
+}
+
+async function persistData(data, expectedRevision, { initialize = false } = {}) {
+  const session = mongoClient.startSession()
+  try {
+    await session.withTransaction(async () => {
+      if (initialize) {
+        await stateCollection.insertOne({
+          _id: 'state',
+          revision: 0,
+          eventSchemaVersion: data.eventSchemaVersion || 0,
+        }, { session })
+      } else {
+        const result = await stateCollection.updateOne(
+          { _id: 'state', revision: expectedRevision },
+          { $inc: { revision: 1 }, $set: { eventSchemaVersion: data.eventSchemaVersion || 0 } },
+          { session },
+        )
+        if (result.modifiedCount !== 1) {
+          const error = new Error('Campus data changed in another session. Reload and try again.')
+          error.status = 409
+          throw error
+        }
+      }
+
+      for (const collectionName of collectionNames) {
+        const collection = database.collection(collectionName)
+        await collection.deleteMany({}, { session })
+        const items = Array.isArray(data[collectionName]) ? data[collectionName] : []
+        if (items.length) {
+          await collection.insertMany(items.map((item, index) => mongoDocument(collectionName, item, index)), { session })
+        }
+      }
+    }, { readPreference: 'primary', readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } })
+  } finally {
+    await session.endSession()
+  }
+}
+
+async function readData() {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const state = await stateCollection.findOne({ _id: 'state' })
+    if (!state) throw new Error('CampusLoop database has not been initialized.')
+    const collections = await Promise.all(collectionNames.map(async name => {
+      const documents = await database.collection(name).find({}).toArray()
+      return [name, documents.map(({ _id, ...item }) => item)]
+    }))
+    const confirmedState = await stateCollection.findOne({ _id: 'state' })
+    if (state.revision !== confirmedState?.revision) continue
+    const data = Object.fromEntries(collections)
+    data.eventSchemaVersion = state.eventSchemaVersion || 0
+    snapshotRevisions.set(data, state.revision)
+    return data
+  }
+  const error = new Error('Campus data is changing too quickly. Please retry the request.')
+  error.status = 503
+  throw error
+}
+
+async function writeData(data) {
+  const expectedRevision = snapshotRevisions.get(data)
+  if (expectedRevision === undefined) throw new Error('Cannot save a database snapshot without its revision.')
+  await persistData(data, expectedRevision)
+}
+
+async function initializeDatabase() {
+  const existingState = await stateCollection.findOne({ _id: 'state' })
+  if (existingState) return
+
+  const { data, migrated } = normalizeData(localDataForMigration())
+  try {
+    await persistData(data, 0, { initialize: true })
+    console.log(fs.existsSync(dataPath)
+      ? `Imported existing data from ${path.relative(process.cwd(), dataPath)} into MongoDB Atlas.`
+      : 'Initialized MongoDB Atlas with the starter campus content.')
+    if (migrated) console.log('Applied legacy data migrations during database initialization.')
+  } catch (error) {
+    if (error.code !== 11000) throw error
+    const state = await stateCollection.findOne({ _id: 'state' })
+    if (!state) throw error
+  }
 }
 
 function publicUser(user) {
@@ -126,20 +261,32 @@ function tokenFor(user) {
   return jwt.sign({ sub: user.id }, jwtSecret, { expiresIn: '7d' })
 }
 
-function requireAuth(request, response, next) {
+async function requireAuth(request, response, next) {
   const header = request.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : null
   if (!token) return response.status(401).json({ message: 'Authentication required.' })
+  let payload
   try {
-    const payload = jwt.verify(token, jwtSecret)
-    const data = readData()
-    const user = data.users.find(item => item.id === payload.sub)
+    payload = jwt.verify(token, jwtSecret)
+  } catch {
+    return response.status(401).json({ message: 'Session is no longer valid.' })
+  }
+  try {
+    request.data = await readData()
+    const user = request.data.users.find(item => item.id === payload.sub)
     if (!user) return response.status(401).json({ message: 'Session is no longer valid.' })
     request.user = user
-    next()
-  } catch {
-    response.status(401).json({ message: 'Session is no longer valid.' })
+    return next()
+  } catch (error) {
+    return next(error)
   }
+}
+
+function requireAdmin(request, response, next) {
+  if (request.user?.role !== 'admin') {
+    return response.status(403).json({ message: 'Administrator access is required.' })
+  }
+  return next()
 }
 
 const app = express()
@@ -148,15 +295,15 @@ app.use(express.json({ limit: '4mb' }))
 
 app.get('/api/health', (_request, response) => response.json({ status: 'ok', service: 'campusloop-api' }))
 
-app.post('/api/auth/login', (request, response) => {
+app.post('/api/auth/login', async (request, response) => {
   const { email, password } = request.body
-  const data = readData()
+  const data = await readData()
   const user = data.users.find(item => item.email.toLowerCase() === String(email || '').toLowerCase())
   if (!user || !bcrypt.compareSync(String(password || ''), user.passwordHash)) return response.status(401).json({ message: 'Email or password is incorrect.' })
   response.json({ token: tokenFor(user), user: publicUser(user) })
 })
 
-app.post('/api/auth/register', (request, response) => {
+app.post('/api/auth/register', async (request, response) => {
   const { name, branch, year, hostel = '', phone, email, password } = request.body
   const normalizedEmail = String(email || '').trim().toLowerCase()
   const normalizedPhone = typeof phone === 'string' ? phone.trim() : ''
@@ -165,30 +312,29 @@ app.post('/api/auth/register', (request, response) => {
   if (!/^[^\s@]+@student\.nitw\.ac\.in$/.test(normalizedEmail)) return response.status(400).json({ message: 'Use your @student.nitw.ac.in student email address.' })
   if (!/^\+?[0-9().\-\s]+$/.test(normalizedPhone) || phoneDigits.length < 7 || phoneDigits.length > 15) return response.status(400).json({ message: 'Enter a valid phone number with 7 to 15 digits.' })
   if (String(name).trim().length > 100 || String(branch).trim().length > 100 || String(year).trim().length > 20 || String(hostel).trim().length > 100 || normalizedPhone.length > 25) return response.status(400).json({ message: 'Name, branch, year, hostel, or phone number is too long.' })
-  const data = readData()
+  const role = normalizedEmail === adminEmail && adminEmail
+    ? request.body.adminSetupKey === adminSetupKey && adminSetupKey.length >= 24 ? 'admin' : null
+    : 'student'
+  if (!role) return response.status(403).json({ message: 'A valid administrator setup key is required for this account.' })
+  const data = await readData()
   if (data.users.some(user => user.email.toLowerCase() === normalizedEmail)) return response.status(409).json({ message: 'An account with this email already exists.' })
-  const user = { id: `user-${Date.now()}`, name: name.trim(), branch: branch.trim(), year: String(year).trim(), hostel: String(hostel).trim(), phone: normalizedPhone, email: normalizedEmail, passwordHash: bcrypt.hashSync(String(password), 10), role: 'student', createdAt: new Date().toISOString() }
+  const user = { id: `user-${randomUUID()}`, name: name.trim(), branch: branch.trim(), year: String(year).trim(), hostel: String(hostel).trim(), phone: normalizedPhone, email: normalizedEmail, passwordHash: bcrypt.hashSync(String(password), 10), role, createdAt: new Date().toISOString() }
   data.users.push(user)
-  writeData(data)
+  await writeData(data)
   response.status(201).json({ token: tokenFor(user), user: publicUser(user) })
-})
-
-app.post('/api/auth/demo', (_request, response) => {
-  const user = readData().users[0]
-  response.json({ token: tokenFor(user), user: publicUser(user) })
 })
 
 app.get('/api/auth/me', requireAuth, (request, response) => response.json({ user: publicUser(request.user) }))
 
 app.get('/api/listings', requireAuth, (request, response) => {
-  const data = readData()
+  const data = request.data
   const listings = data.listings
     .filter(item => item.postType === 'wanted' && (item.status === 'Open' || item.ownerId === request.user.id))
     .map(item => ({ ...item, saved: (item.savedBy || []).includes(request.user.id) }))
   response.json({ listings })
 })
 
-app.post('/api/listings', requireAuth, (request, response) => {
+app.post('/api/listings', requireAuth, async (request, response) => {
   const { title, category, description = '', image = '' } = request.body
   const categories = ['Books', 'Electronics', 'Study gear', 'Room & living']
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 120 || !categories.includes(category)) {
@@ -198,9 +344,9 @@ app.post('/api/listings', requireAuth, (request, response) => {
   if (typeof image !== 'string' || (image && (!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(image) || image.length > 3 * 1024 * 1024))) {
     return response.status(400).json({ message: 'Choose a JPEG image smaller than 2 MB after resizing.' })
   }
-  const data = readData()
+  const data = request.data
   const listing = {
-    id: `listing-${Date.now()}`,
+    id: `listing-${randomUUID()}`,
     postType: 'wanted',
     status: 'Open',
     title: title.trim(),
@@ -215,32 +361,32 @@ app.post('/api/listings', requireAuth, (request, response) => {
     savedBy: [],
   }
   data.listings.unshift(listing)
-  writeData(data)
+  await writeData(data)
   response.status(201).json({ listing: { ...listing, saved: false } })
 })
 
-app.patch('/api/listings/:id/save', requireAuth, (request, response) => {
-  const data = readData()
+app.patch('/api/listings/:id/save', requireAuth, async (request, response) => {
+  const data = request.data
   const listing = data.listings.find(item => item.id === request.params.id)
   if (!listing) return response.status(404).json({ message: 'Listing not found.' })
   const saved = listing.savedBy.includes(request.user.id)
   listing.savedBy = saved ? listing.savedBy.filter(id => id !== request.user.id) : [...listing.savedBy, request.user.id]
-  writeData(data)
+  await writeData(data)
   response.json({ saved: !saved })
 })
 
-app.post('/api/listings/:id/requests', requireAuth, (request, response) => {
-  const data = readData()
+app.post('/api/listings/:id/requests', requireAuth, async (request, response) => {
+  const data = request.data
   const listing = data.listings.find(item => item.id === request.params.id)
   if (!listing) return response.status(404).json({ message: 'Listing not found.' })
-  const exchangeRequest = { id: `request-${Date.now()}`, listingId: listing.id, requesterId: request.user.id, status: 'Pending', createdAt: new Date().toISOString() }
+  const exchangeRequest = { id: `request-${randomUUID()}`, listingId: listing.id, requesterId: request.user.id, status: 'Pending', createdAt: new Date().toISOString() }
   data.requests.push(exchangeRequest)
-  writeData(data)
+  await writeData(data)
   response.status(201).json({ request: exchangeRequest })
 })
 
-app.post('/api/listings/:id/offers', requireAuth, (request, response) => {
-  const data = readData()
+app.post('/api/listings/:id/offers', requireAuth, async (request, response) => {
+  const data = request.data
   const listing = data.listings.find(item => item.id === request.params.id && item.postType === 'wanted')
   if (!listing) return response.status(404).json({ message: 'Resource request not found.' })
   if (listing.status !== 'Open') return response.status(409).json({ message: 'This resource request is already closed.' })
@@ -249,7 +395,7 @@ app.post('/api/listings/:id/offers', requireAuth, (request, response) => {
   if (!message || message.length > 1000) return response.status(400).json({ message: 'Write a message of up to 1,000 characters.' })
   data.offers ||= []
   const offer = {
-    id: `offer-${Date.now()}`,
+    id: `offer-${randomUUID()}`,
     listingId: listing.id,
     senderId: request.user.id,
     recipientId: listing.ownerId,
@@ -257,12 +403,12 @@ app.post('/api/listings/:id/offers', requireAuth, (request, response) => {
     createdAt: new Date().toISOString(),
   }
   data.offers.push(offer)
-  writeData(data)
+  await writeData(data)
   response.status(201).json({ offer })
 })
 
 app.get('/api/offers/my', requireAuth, (request, response) => {
-  const data = readData()
+  const data = request.data
   const offers = (data.offers || [])
     .filter(offer => offer.recipientId === request.user.id)
     .map(offer => ({
@@ -275,26 +421,26 @@ app.get('/api/offers/my', requireAuth, (request, response) => {
   response.json({ offers })
 })
 
-app.patch('/api/listings/:id/close', requireAuth, (request, response) => {
-  const data = readData()
+app.patch('/api/listings/:id/close', requireAuth, async (request, response) => {
+  const data = request.data
   const listing = data.listings.find(item => item.id === request.params.id && item.postType === 'wanted')
   if (!listing) return response.status(404).json({ message: 'Resource request not found.' })
   if (listing.ownerId !== request.user.id) return response.status(403).json({ message: 'Only the student who posted this request can close it.' })
   if (listing.status !== 'Open') return response.status(409).json({ message: 'This resource request is already closed.' })
   listing.status = 'Fulfilled'
   listing.closedAt = new Date().toISOString()
-  writeData(data)
+  await writeData(data)
   response.json({ listing })
 })
 
 app.get('/api/requests/my', requireAuth, (request, response) => {
-  const data = readData()
+  const data = request.data
   const requests = data.requests.filter(item => item.requesterId === request.user.id).map(item => ({ ...item, listing: data.listings.find(listing => listing.id === item.listingId) }))
   response.json({ requests })
 })
 
 app.get('/api/events', requireAuth, (request, response) => {
-  const data = readData()
+  const data = request.data
   const visibleCount = new Map()
   const events = data.events.filter(event => {
     const count = visibleCount.get(event.clubId) || 0
@@ -309,7 +455,7 @@ app.get('/api/events', requireAuth, (request, response) => {
 })
 
 app.get('/api/clubs', requireAuth, (request, response) => {
-  const data = readData()
+  const data = request.data
   const result = data.clubs.map(club => {
     const isMember = data.clubMemberships.some(member => member.clubId === club.id && member.userId === request.user.id)
     const joinRequest = data.clubJoinRequests.find(item => item.clubId === club.id && item.userId === request.user.id && item.status === 'pending')
@@ -325,20 +471,29 @@ app.get('/api/clubs', requireAuth, (request, response) => {
   response.json({ clubs: result })
 })
 
-app.post('/api/clubs/:id/join-requests', requireAuth, (request, response) => {
-  const data = readData()
+app.post('/api/clubs/:id/join-requests', requireAuth, async (request, response) => {
+  const data = request.data
   const club = data.clubs.find(item => item.id === request.params.id)
   if (!club) return response.status(404).json({ message: 'Club not found.' })
   if (data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(409).json({ message: 'You are already a member of this club.' })
   if (data.clubJoinRequests.some(item => item.clubId === club.id && item.userId === request.user.id && item.status === 'pending')) return response.status(409).json({ message: 'Your request to join this club is already pending.' })
-  const joinRequest = { id: `club-request-${Date.now()}`, clubId: club.id, userId: request.user.id, status: 'pending', createdAt: new Date().toISOString() }
+  const joinRequest = { id: `club-request-${randomUUID()}`, clubId: club.id, userId: request.user.id, status: 'pending', createdAt: new Date().toISOString() }
+  if (!data.clubMemberships.some(item => item.clubId === club.id)) {
+    joinRequest.status = 'approved'
+    joinRequest.approvedAt = new Date().toISOString()
+    joinRequest.approvedBy = request.user.id
+    data.clubMemberships.push({ clubId: club.id, userId: request.user.id, joinedAt: joinRequest.approvedAt })
+    data.clubJoinRequests.push(joinRequest)
+    await writeData(data)
+    return response.status(201).json({ request: joinRequest, approved: true })
+  }
   data.clubJoinRequests.push(joinRequest)
-  writeData(data)
+  await writeData(data)
   response.status(201).json({ request: joinRequest })
 })
 
-app.post('/api/clubs/:id/join-requests/:requestId/approve', requireAuth, (request, response) => {
-  const data = readData()
+app.post('/api/clubs/:id/join-requests/:requestId/approve', requireAuth, async (request, response) => {
+  const data = request.data
   const club = data.clubs.find(item => item.id === request.params.id)
   if (!club) return response.status(404).json({ message: 'Club not found.' })
   if (!data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'Only an existing club member can approve membership requests.' })
@@ -348,13 +503,13 @@ app.post('/api/clubs/:id/join-requests/:requestId/approve', requireAuth, (reques
   joinRequest.approvedAt = new Date().toISOString()
   joinRequest.approvedBy = request.user.id
   data.clubMemberships.push({ clubId: club.id, userId: joinRequest.userId, joinedAt: joinRequest.approvedAt })
-  writeData(data)
+  await writeData(data)
   response.json({ approved: true })
 })
 
-app.post('/api/events', requireAuth, (request, response) => {
+app.post('/api/events', requireAuth, async (request, response) => {
   const { title, type, date, time, place, description = '', clubId } = request.body
-  const data = readData()
+  const data = request.data
   const club = data.clubs.find(item => item.id === clubId)
   if (!club) return response.status(400).json({ message: 'Choose a valid organizing club.' })
   if (!data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'You must be an approved member of the organizing club to post an event.' })
@@ -367,7 +522,7 @@ app.post('/api/events', requireAuth, (request, response) => {
   const upcomingCount = data.events.filter(event => event.clubId === club.id && (!event.date || event.date >= today)).length
   if (upcomingCount >= 2) return response.status(409).json({ message: 'This club already has two upcoming events listed.' })
   const event = {
-    id: `event-${Date.now()}`,
+    id: `event-${randomUUID()}`,
     title: title.trim(),
     type: type.trim(),
     date,
@@ -384,12 +539,12 @@ app.post('/api/events', requireAuth, (request, response) => {
     createdBy: request.user.id,
   }
   data.events.push(event)
-  writeData(data)
+  await writeData(data)
   response.status(201).json({ event: { ...event, registered: false } })
 })
 
-app.delete('/api/events/:id', requireAuth, (request, response) => {
-  const data = readData()
+app.delete('/api/events/:id', requireAuth, async (request, response) => {
+  const data = request.data
   const eventIndex = data.events.findIndex(item => item.id === request.params.id)
   if (eventIndex < 0) return response.status(404).json({ message: 'Event not found.' })
   const event = data.events[eventIndex]
@@ -398,12 +553,12 @@ app.delete('/api/events/:id', requireAuth, (request, response) => {
   if (!event.date || event.date >= today) return response.status(409).json({ message: 'An event can only be removed after its scheduled date has passed.' })
   data.events.splice(eventIndex, 1)
   data.registrations = data.registrations.filter(registration => registration.eventId !== event.id)
-  writeData(data)
+  await writeData(data)
   response.json({ removed: true })
 })
 
-app.post('/api/events/:id/registration', requireAuth, (request, response) => {
-  const data = readData()
+app.post('/api/events/:id/registration', requireAuth, async (request, response) => {
+  const data = request.data
   const event = data.events.find(item => item.id === request.params.id)
   if (!event) return response.status(404).json({ message: 'Event not found.' })
   const registrationIndex = data.registrations.findIndex(item => item.eventId === event.id && item.userId === request.user.id)
@@ -411,12 +566,12 @@ app.post('/api/events/:id/registration', requireAuth, (request, response) => {
   data.registrations = registered
     ? data.registrations.filter((_, index) => index !== registrationIndex)
     : [...data.registrations, { eventId: event.id, userId: request.user.id, joinedAt: new Date().toISOString() }]
-  writeData(data)
+  await writeData(data)
   response.json({ registered: !registered })
 })
 
 app.get('/api/events/:id/guest-list', requireAuth, (request, response) => {
-  const data = readData()
+  const data = request.data
   const event = data.events.find(item => item.id === request.params.id)
   if (!event) return response.status(404).json({ message: 'Event not found.' })
   const isOrganizer = data.clubMemberships.some(member => member.clubId === event.clubId && member.userId === request.user.id)
@@ -432,8 +587,8 @@ app.get('/api/events/:id/guest-list', requireAuth, (request, response) => {
   response.json({ event: { id: event.id, title: event.title }, attendees })
 })
 
-app.patch('/api/profile', requireAuth, (request, response) => {
-  const data = readData()
+app.patch('/api/profile', requireAuth, async (request, response) => {
+  const data = request.data
   const user = data.users.find(item => item.id === request.user.id)
   const { branch, year, hostel = '' } = request.body
   if (typeof branch !== 'string' || !branch.trim() || typeof year !== 'string' || !year.trim()) return response.status(400).json({ message: 'Branch and year are required.' })
@@ -441,8 +596,244 @@ app.patch('/api/profile', requireAuth, (request, response) => {
   user.branch = branch.trim()
   user.year = year.trim()
   user.hostel = hostel.trim()
-  writeData(data)
+  await writeData(data)
   response.json({ user: publicUser(user) })
 })
 
-app.listen(port, () => console.log(`CampusLoop API running on http://localhost:${port}`))
+app.get('/api/announcements', requireAuth, (request, response) => {
+  const data = request.data
+  const announcements = [...(data.announcements || [])].sort((first, second) => Number(second.pinned) - Number(first.pinned) || new Date(second.createdAt) - new Date(first.createdAt))
+  response.json({ announcements })
+})
+
+app.post('/api/announcements', requireAuth, requireAdmin, async (request, response) => {
+  const { title, category = 'General', content = '', pinned = false } = request.body
+  if (typeof title !== 'string' || !title.trim()) return response.status(400).json({ message: 'Announcement title is required.' })
+  if (typeof content !== 'string' || !content.trim()) return response.status(400).json({ message: 'Announcement details are required.' })
+  const data = request.data
+  const announcement = {
+    id: `announcement-${randomUUID()}`,
+    title: title.trim(),
+    category: String(category || 'General').trim() || 'General',
+    content: content.trim(),
+    pinned: Boolean(pinned),
+    author: request.user.name,
+    createdAt: new Date().toISOString(),
+  }
+  data.announcements = [announcement, ...(data.announcements || [])]
+  await writeData(data)
+  response.status(201).json({ announcement })
+})
+
+app.delete('/api/announcements/:id', requireAuth, requireAdmin, async (request, response) => {
+  const data = request.data
+  const index = (data.announcements || []).findIndex(item => item.id === request.params.id)
+  if (index < 0) return response.status(404).json({ message: 'Announcement not found.' })
+  data.announcements.splice(index, 1)
+  await writeData(data)
+  response.json({ removed: true })
+})
+
+app.put('/api/announcements/:id', requireAuth, requireAdmin, async (request, response) => {
+  const { title, category, content, pinned } = request.body
+  const data = request.data
+  const announcement = (data.announcements || []).find(item => item.id === request.params.id)
+  if (!announcement) return response.status(404).json({ message: 'Announcement not found.' })
+  if (typeof title !== 'string' || !title.trim() || typeof content !== 'string' || !content.trim()) {
+    return response.status(400).json({ message: 'Announcement title and details are required.' })
+  }
+  announcement.title = title.trim()
+  announcement.category = typeof category === 'string' && category.trim() ? category.trim() : 'General'
+  announcement.content = content.trim()
+  announcement.pinned = Boolean(pinned)
+  await writeData(data)
+  response.json({ announcement })
+})
+
+app.get('/api/lost-found', requireAuth, (request, response) => {
+  const data = request.data
+  const items = [...(data.lostFound || [])]
+    .map(item => {
+      const reporter = data.users.find(user => user.id === item.reporterId)
+      return { ...item, contactEmail: item.contactEmail || reporter?.email || '', contactPhone: item.contactPhone || reporter?.phone || '' }
+    })
+    .sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
+  response.json({ items })
+})
+
+app.get('/api/lost-found/:id', requireAuth, (request, response) => {
+  const data = request.data
+  const item = (data.lostFound || []).find(entry => entry.id === request.params.id)
+  if (!item) return response.status(404).json({ message: 'Report not found.' })
+  response.json({ item })
+})
+
+app.post('/api/lost-found', requireAuth, async (request, response) => {
+  const { title, type = 'lost', description = '', location = '', date = '', image = '' } = request.body
+  if (typeof title !== 'string' || !title.trim()) return response.status(400).json({ message: 'Item title is required.' })
+  if (!['lost', 'found'].includes(type)) return response.status(400).json({ message: 'Report type must be lost or found.' })
+  if (typeof description !== 'string' || !description.trim()) return response.status(400).json({ message: 'Please describe the item.' })
+  if (typeof location !== 'string' || !location.trim()) return response.status(400).json({ message: 'Location is required.' })
+  const data = request.data
+  const item = {
+    id: `lost-found-${randomUUID()}`,
+    title: title.trim(),
+    type,
+    description: description.trim(),
+    location: location.trim(),
+    date: typeof date === 'string' ? date : '',
+    image: typeof image === 'string' ? image.trim() : '',
+    contactName: request.user.name,
+    contactEmail: request.user.email,
+    contactPhone: request.user.phone || '',
+    reporterId: request.user.id,
+    status: 'open',
+    createdAt: new Date().toISOString(),
+  }
+  data.lostFound = [item, ...(data.lostFound || [])]
+  await writeData(data)
+  response.status(201).json({ item })
+})
+
+app.put('/api/lost-found/:id', requireAuth, async (request, response) => {
+  const data = request.data
+  const item = (data.lostFound || []).find(entry => entry.id === request.params.id)
+  if (!item) return response.status(404).json({ message: 'Report not found.' })
+  if (item.reporterId !== request.user.id) return response.status(403).json({ message: 'You can only edit your own report.' })
+  const { title, type, description, location, date, image } = request.body
+  if (typeof title === 'string' && title.trim()) item.title = title.trim()
+  if (type === 'lost' || type === 'found') item.type = type
+  if (typeof description === 'string' && description.trim()) item.description = description.trim()
+  if (typeof location === 'string' && location.trim()) item.location = location.trim()
+  if (typeof date === 'string') item.date = date
+  if (typeof image === 'string') item.image = image.trim()
+  await writeData(data)
+  response.json({ item })
+})
+
+app.put('/api/lost-found/:id/resolve', requireAuth, async (request, response) => {
+  const data = request.data
+  const item = (data.lostFound || []).find(entry => entry.id === request.params.id)
+  if (!item) return response.status(404).json({ message: 'Report not found.' })
+  if (item.reporterId !== request.user.id && request.user.role !== 'admin') return response.status(403).json({ message: 'Only the reporter or an administrator can resolve this item.' })
+  item.status = 'resolved'
+  await writeData(data)
+  response.json({ item })
+})
+
+app.delete('/api/lost-found/:id', requireAuth, async (request, response) => {
+  const data = request.data
+  const index = (data.lostFound || []).findIndex(item => item.id === request.params.id)
+  if (index < 0) return response.status(404).json({ message: 'Report not found.' })
+  if (data.lostFound[index].reporterId !== request.user.id && request.user.role !== 'admin') return response.status(403).json({ message: 'You can only delete your own report.' })
+  data.lostFound.splice(index, 1)
+  await writeData(data)
+  response.json({ removed: true })
+})
+
+app.get('/api/maintenance', requireAuth, (request, response) => {
+  const data = request.data
+  const requests = [...(data.maintenanceRequests || [])].sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
+  response.json({ requests })
+})
+
+app.get('/api/maintenance/my', requireAuth, (request, response) => {
+  const data = request.data
+  const requests = (data.maintenanceRequests || []).filter(item => item.userId === request.user.id).sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
+  response.json({ requests })
+})
+
+app.post('/api/maintenance', requireAuth, async (request, response) => {
+  const { title, category = 'Electrical', location = '', description = '', image = '' } = request.body
+  if (typeof title !== 'string' || !title.trim()) return response.status(400).json({ message: 'Issue title is required.' })
+  if (typeof location !== 'string' || !location.trim()) return response.status(400).json({ message: 'Location is required.' })
+  if (typeof description !== 'string' || !description.trim()) return response.status(400).json({ message: 'Describe the issue clearly.' })
+  const data = request.data
+  const requestEntry = {
+    id: `maintenance-${randomUUID()}`,
+    title: title.trim(),
+    category: String(category || 'Electrical').trim() || 'Electrical',
+    location: location.trim(),
+    description: description.trim(),
+    image: typeof image === 'string' ? image.trim() : '',
+    userId: request.user.id,
+    userName: request.user.name,
+    status: 'Submitted',
+    createdAt: new Date().toISOString(),
+  }
+  data.maintenanceRequests = [requestEntry, ...(data.maintenanceRequests || [])]
+  await writeData(data)
+  response.status(201).json({ request: requestEntry })
+})
+
+app.put('/api/maintenance/:id/status', requireAuth, requireAdmin, async (request, response) => {
+  const { status } = request.body
+  if (!['Submitted', 'In Progress', 'Resolved'].includes(status)) return response.status(400).json({ message: 'Choose a valid maintenance status.' })
+  const data = request.data
+  const requestEntry = (data.maintenanceRequests || []).find(item => item.id === request.params.id)
+  if (!requestEntry) return response.status(404).json({ message: 'Maintenance request not found.' })
+  requestEntry.status = status
+  if (status !== 'Resolved') delete requestEntry.confirmedByUserAt
+  await writeData(data)
+  response.json({ request: requestEntry })
+})
+
+app.put('/api/maintenance/:id/confirm', requireAuth, async (request, response) => {
+  const data = request.data
+  const requestEntry = (data.maintenanceRequests || []).find(item => item.id === request.params.id)
+  if (!requestEntry) return response.status(404).json({ message: 'Maintenance request not found.' })
+  if (requestEntry.userId !== request.user.id) return response.status(403).json({ message: 'Only the requester can confirm resolution.' })
+  if (requestEntry.status !== 'Resolved') return response.status(409).json({ message: 'An administrator must mark the request resolved before it can be confirmed.' })
+  requestEntry.confirmedByUserAt = new Date().toISOString()
+  await writeData(data)
+  response.json({ request: requestEntry })
+})
+
+app.post('/api/reviews', requireAuth, async (request, response) => {
+  const { resourceId = '', userId = '', rating = 5, comment = '' } = request.body
+  if (typeof rating !== 'number' || rating < 1 || rating > 5) return response.status(400).json({ message: 'Rating must be between 1 and 5.' })
+  const data = request.data
+  const review = {
+    id: `review-${randomUUID()}`,
+    resourceId: String(resourceId || 'campusloop'),
+    userId: String(userId || request.user.id),
+    reviewerId: request.user.id,
+    reviewerName: request.user.name,
+    rating,
+    comment: typeof comment === 'string' ? comment.trim() : '',
+    createdAt: new Date().toISOString(),
+  }
+  data.reviews.push(review)
+  await writeData(data)
+  response.status(201).json({ review })
+})
+
+app.get('/api/users/:id/reviews', requireAuth, (request, response) => {
+  const data = request.data
+  const reviews = (data.reviews || []).filter(item => item.userId === request.params.id || item.reviewerId === request.params.id)
+  response.json({ reviews })
+})
+
+app.use((error, _request, response, _next) => {
+  console.error('CampusLoop API request failed:', error)
+  response.status(error.status || 500).json({ message: error.status ? error.message : 'The server could not complete the request.' })
+})
+
+async function startServer() {
+  if (!mongoUri) throw new Error('MONGODB_URI is required. Configure the MongoDB Atlas connection string in your .env file.')
+  if (!jwtSecret || jwtSecret.length < 32) throw new Error('JWT_SECRET is required and must contain at least 32 characters.')
+
+  mongoClient = new MongoClient(mongoUri)
+  await mongoClient.connect()
+  database = mongoClient.db(databaseName)
+  stateCollection = database.collection('_campusloop_state')
+  await initializeDatabase()
+  await database.collection('users').createIndex({ email: 1 }, { unique: true })
+  app.listen(port, () => console.log(`CampusLoop API connected to MongoDB database "${databaseName}" on http://localhost:${port}`))
+}
+
+startServer().catch(async error => {
+  console.error('CampusLoop failed to start:', error.message)
+  if (mongoClient) await mongoClient.close()
+  process.exitCode = 1
+})

@@ -39,9 +39,26 @@ npm run dev:full
 
 Open <http://localhost:5173>. Stop the development server with `Ctrl+C`.
 
-### Data on each laptop
+### Configure MongoDB Atlas
 
-The API creates `server/data.json` for local persistence. This file is intentionally ignored by Git, so each person gets their own local accounts and data; pushing or pulling the repository does not sync accounts or app data. The app currently uses this local JSON file rather than a shared hosted database.
+1. Create a MongoDB Atlas cluster and a database user.
+2. In Atlas Network Access, allow the IP address where the API will run. Avoid allowing access from every IP address for a deployed application.
+3. Copy `.env.example` to `.env` and replace the placeholders:
+
+   ```dotenv
+   MONGODB_URI=mongodb+srv://<database-user>:<url-encoded-password>@<cluster-host>/?retryWrites=true&w=majority
+   MONGODB_DB=campusloop
+   JWT_SECRET=<a-random-secret-at-least-32-characters-long>
+   ADMIN_EMAIL=admin@student.nitw.ac.in
+   ADMIN_SETUP_KEY=<a-private-random-value-at-least-24-characters-long>
+   PORT=4000
+   ```
+
+   Register the `ADMIN_EMAIL` address with the `ADMIN_SETUP_KEY` to create the initial administrator account. The key is required only during administrator registration; do not share it. To promote an account that was already imported, set its `role` to `admin` in MongoDB Atlas Data Explorer as a trusted database operator.
+4. Keep `.env` private; it is excluded from Git. Do not put the Atlas connection string in frontend variables.
+5. Start the app as described above. The API exits with a clear error if `MONGODB_URI` or a suitable `JWT_SECRET` is missing.
+
+On the first API start, existing `server/data.json` data is imported into the selected Atlas database if it has not already been initialized. The JSON file is left untouched as a backup. MongoDB becomes the source of truth after import; subsequent edits to the JSON file are not imported. To start with an empty database, move the old JSON file out of `server/` before the first start.
 
 ## Problem Statement
 
@@ -163,7 +180,9 @@ Features:
 
 ### Database and Storage
 
-- Local JSON persistence in `server/data.json`
+- MongoDB Atlas via the official MongoDB Node.js driver
+- Separate collections for users, listings, events, registrations, requests, offers, clubs, announcements, lost-and-found reports, maintenance requests, and reviews
+- The API commits writes in a transaction and checks a shared revision to reject stale simultaneous edits instead of silently overwriting newer data
 
 ### Development and Deployment Tools
 
@@ -179,14 +198,20 @@ React + Vite Frontend
       v
 Express.js REST API
       |
-      | Local JSON persistence
+      | MongoDB Node.js driver
       v
-server/data.json
+MongoDB Atlas
 ```
 
-## Local persistence
+## Current implementation notes
 
-The Express API persists application state in `server/data.json`. That file is created and maintained locally and is excluded from Git; the API implementation in `server/index.js` is the source of truth for the data structure.
+- `server/data.json` is only a one-time legacy import source; it is no longer updated by the API.
+- The working resource flow is currently a student-posted **wanted request** with student offers and a “mark received” close action. It is not yet the full item-listing, borrow approval/return, and review workflow described in the objectives.
+- Announcements can be read by signed-in users and created/deleted by the configured administrator. Category filtering, text search, and pinning are available. The API has an update route, but there is not yet an edit control in the UI.
+- Lost-and-found supports lost/found reports, type filtering, contact links, resolution, and owner/admin deletion. Images are currently provided as URLs rather than uploaded files, and text search/edit controls are not yet exposed in the UI.
+- Events support club membership requests, creating/removing events, registration/cancellation, and organizer guest lists. Category/date filters and administrator dashboard management are not yet implemented.
+- Maintenance requests can be submitted and tracked. Administrators change status; the requester can confirm a resolved request. Administrator user management, category management, assignment, and dashboard statistics remain to be implemented.
+- The current client is a student-facing app with a configured administrator role, not a complete separate admin dashboard.
 
 ## Main Pages
 
@@ -221,16 +246,14 @@ GET  /api/auth/me
 ### Resource Exchange
 
 ```text
-GET    /api/resources
-POST   /api/resources
-GET    /api/resources/:id
-PUT    /api/resources/:id
-DELETE /api/resources/:id
-POST   /api/requests
+GET    /api/listings
+POST   /api/listings
+PATCH  /api/listings/:id/save
+POST   /api/listings/:id/offers
+GET    /api/offers/my
+PATCH  /api/listings/:id/close
+POST   /api/listings/:id/requests
 GET    /api/requests/my
-PUT    /api/requests/:id/approve
-PUT    /api/requests/:id/reject
-PUT    /api/requests/:id/return
 ```
 
 ### Announcements
@@ -258,9 +281,9 @@ PUT    /api/lost-found/:id/resolve
 ```text
 GET  /api/events
 POST /api/events
-GET  /api/events/:id
-POST /api/events/:id/register
-DELETE /api/events/:id/register
+DELETE /api/events/:id
+POST /api/events/:id/registration
+GET  /api/events/:id/guest-list
 ```
 
 ### Maintenance
@@ -270,6 +293,7 @@ GET  /api/maintenance
 POST /api/maintenance
 GET  /api/maintenance/my
 PUT  /api/maintenance/:id/status
+PUT  /api/maintenance/:id/confirm
 ```
 
 ### Reviews

@@ -23,6 +23,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if not exist ".env" (
+  echo MongoDB Atlas settings are missing. Copy .env.example to .env and fill in your Atlas URI and JWT secret.
+  pause
+  exit /b 1
+)
+
 if not exist "node_modules\vite\bin\vite.js" (
   echo Installing CampusLoop dependencies from package-lock.json...
   call npm ci
