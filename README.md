@@ -54,11 +54,22 @@ Open <http://localhost:5173>. Stop the development server with `Ctrl+C`.
    PORT=4000
    ```
 
-   Register the `ADMIN_EMAIL` address with the `ADMIN_SETUP_KEY` to create the initial administrator account. The key is required only during administrator registration; do not share it. To promote an account that was already imported, set its `role` to `admin` in MongoDB Atlas Data Explorer as a trusted database operator.
+   Register the `ADMIN_EMAIL` address with the `ADMIN_SETUP_KEY` to create the initial administrator account. The key is required only during administrator registration; do not share it. After registration, sign in through the regular CampusLoop login with that email and the account password; the administrator dashboard and controls appear automatically. To promote an account that was already imported, set its `role` to `admin` in MongoDB Atlas Data Explorer as a trusted database operator.
 4. Keep `.env` private; it is excluded from Git. Do not put the Atlas connection string in frontend variables.
 5. Start the app as described above. The API exits with a clear error if `MONGODB_URI` or a suitable `JWT_SECRET` is missing.
 
 On the first API start, existing `server/data.json` data is imported into the selected Atlas database if it has not already been initialized. The JSON file is left untouched as a backup. MongoDB becomes the source of truth after import; subsequent edits to the JSON file are not imported. To start with an empty database, move the old JSON file out of `server/` before the first start.
+
+## Troubleshooting and recovery
+
+- **API cannot reach MongoDB:** Check the API terminal output for missing `MONGODB_URI`/`JWT_SECRET`, Atlas IP access rules, database-user permissions, and an invalid connection string. With valid environment variables the API stays available and retries transient connection failures with backoff; the health endpoint remains `503` until database initialization succeeds. Missing required secrets still stop startup rather than using an insecure fallback.
+- **Website says it cannot connect:** Confirm the API is listening on port 4000 and open <http://localhost:4000/api/health>. A healthy response includes `"database":"connected"`. The client retries transient read failures, times out slow requests, displays a reconnect action, and preserves form values when a write fails.
+- **Atlas becomes unavailable while the app is running:** MongoDB's driver reconnects where possible. Protected API operations return a clear temporary-unavailable response; writes are not queued or reported as successful. Restore Atlas connectivity, then use **Reconnect** or retry the action. Check Atlas cluster status, IP allowlist, and network access.
+- **A simultaneous edit returns HTTP 409:** The API rejects stale snapshots to prevent overwriting another user's update. The client reloads the latest campus data; retry the action after it finishes loading.
+- **HTTP 400, 401, 403, or 413:** Correct the submitted fields, sign in again if your session expired, request the required role/access, or reduce an image/request body that exceeds the 4 MB JSON limit. Invalid JSON receives HTTP 400.
+- **Atlas transaction errors:** The selected MongoDB deployment must support multi-document transactions (MongoDB Atlas replica set/sharded cluster). The API reports transient transaction conflicts as retryable errors; it does not claim that an uncommitted write succeeded.
+
+The `/api/health` endpoint pings MongoDB rather than checking only whether Express is running. The API also closes its HTTP and MongoDB connections on SIGINT/SIGTERM. A client-side error boundary provides a recovery screen for unexpected rendering crashes.
 
 ## Problem Statement
 
@@ -206,12 +217,15 @@ MongoDB Atlas
 ## Current implementation notes
 
 - `server/data.json` is only a one-time legacy import source; it is no longer updated by the API.
-- The working resource flow is currently a student-posted **wanted request** with student offers and a “mark received” close action. It is not yet the full item-listing, borrow approval/return, and review workflow described in the objectives.
-- Announcements can be read by signed-in users and created/deleted by the configured administrator. Category filtering, text search, and pinning are available. The API has an update route, but there is not yet an edit control in the UI.
-- Lost-and-found supports lost/found reports, type filtering, contact links, resolution, and owner/admin deletion. Images are currently provided as URLs rather than uploaded files, and text search/edit controls are not yet exposed in the UI.
-- Events support club membership requests, creating/removing events, registration/cancellation, and organizer guest lists. Category/date filters and administrator dashboard management are not yet implemented.
-- Maintenance requests can be submitted and tracked. Administrators change status; the requester can confirm a resolved request. Administrator user management, category management, assignment, and dashboard statistics remain to be implemented.
-- The current client is a student-facing app with a configured administrator role, not a complete separate admin dashboard.
+- The resource exchange UI shows wanted resource requests so students can offer items to people who need them. Resource images are resized client-side and stored as JPEG data URLs in MongoDB; keep uploads small. For larger deployments, move these image bytes to an object-storage service and retain only the resulting URL.
+- Announcements support category/search filters and administrator create, edit, pin, and delete controls.
+- Lost-and-found supports lost/found filtering, search, contact, report editing, resolution, and owner/admin moderation. Reports accept an image URL or a resized photo uploaded from a computer/phone (including a camera capture on supported phones).
+- Events support category/date filters, club membership authorization, registration/cancellation, organizer/admin guest lists, and optional capacity limits.
+- Students see only their own maintenance requests. Administrators can view all requests, assign active student accounts, move requests through Submitted → In Progress → Resolved, and review dashboard statistics. Requesters can confirm resolution. Maintenance reports accept an image URL or a resized photo upload/camera capture.
+- Club membership requests are approved by an administrator or a current club member. Administrators can review pending requests from the profile's **Campus clubs** section; only approved members can organize that club's events.
+- The administrator dashboard provides campus activity counts and student account search/suspension/restoration. Admin access is granted only through the configured registration setup key; administrators can create and remove events and manage campus content.
+- The UI retries transient reads, shows a connection warning when the API is unreachable, exposes a retry action on startup failures, clears expired sessions, and refreshes after stale-write conflicts. It preserves the active section in the URL hash on reload, broadcasts key resource/lost-and-found changes to other tabs, and refreshes those shared views periodically while signed in. The server validates request bodies and field limits, enforces role/ownership checks, rejects duplicate active resource requests and reviews, and returns explicit errors for unavailable database operations.
+- Maintenance and lost-and-found images currently use validated HTTP(S) URLs rather than Cloudinary uploads. Cloudinary credentials are not configured by this repository.
 
 ## Main Pages
 
@@ -248,12 +262,27 @@ GET  /api/auth/me
 ```text
 GET    /api/listings
 POST   /api/listings
+PUT    /api/listings/:id
+DELETE /api/listings/:id
 PATCH  /api/listings/:id/save
 POST   /api/listings/:id/offers
 GET    /api/offers/my
 PATCH  /api/listings/:id/close
 POST   /api/listings/:id/requests
 GET    /api/requests/my
+PUT    /api/requests/:id/approve
+PUT    /api/requests/:id/reject
+PUT    /api/requests/:id/cancel
+PUT    /api/requests/:id/return
+```
+
+### Administration
+
+```text
+GET   /api/admin/dashboard
+GET   /api/admin/users
+PATCH /api/admin/users/:id/status
+PUT   /api/maintenance/:id/assign
 ```
 
 ### Announcements

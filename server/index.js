@@ -36,6 +36,7 @@ const snapshotRevisions = new WeakMap()
 let database
 let stateCollection
 let mongoClient
+let databaseReady = false
 
 const clubs = [
   { id: 'yrc', name: 'Youth Red Cross (YRC)' },
@@ -79,10 +80,18 @@ const seed = {
 }
 
 function normalizeData(data) {
-  data.users ||= []
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Legacy campus data must be a JSON object.')
   let migrated = false
+  for (const collectionName of collectionNames) {
+    if (!Array.isArray(data[collectionName])) {
+      data[collectionName] = []
+      migrated = true
+    }
+  }
   const seenEmails = new Set()
   for (const user of data.users) {
+    if (!user || typeof user !== 'object' || typeof user.email !== 'string') throw new Error('Every imported user must have a valid email address.')
+    if (typeof user.passwordHash !== 'string' || !user.passwordHash || typeof user.name !== 'string' || !user.id) throw new Error(`Imported user ${user.email} is missing required account data.`)
     if (user.role === 'student' && !/^[^\s@]+@student\.nitw\.ac\.in$/i.test(user.email)) {
       user.email = `${user.email.split('@')[0]}@student.nitw.ac.in`.toLowerCase()
       migrated = true
@@ -209,6 +218,11 @@ async function persistData(data, expectedRevision, { initialize = false } = {}) 
 }
 
 async function readData() {
+  if (!databaseReady || !database || !stateCollection) {
+    const error = new Error('Campus database is starting or unavailable. Retry shortly.')
+    error.status = 503
+    throw error
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const state = await stateCollection.findOne({ _id: 'state' })
     if (!state) throw new Error('CampusLoop database has not been initialized.')
@@ -275,6 +289,7 @@ async function requireAuth(request, response, next) {
     request.data = await readData()
     const user = request.data.users.find(item => item.id === payload.sub)
     if (!user) return response.status(401).json({ message: 'Session is no longer valid.' })
+    if (user.suspendedAt) return response.status(403).json({ message: 'This account has been suspended. Contact a campus administrator.' })
     request.user = user
     return next()
   } catch (error) {
@@ -286,20 +301,47 @@ function requireAdmin(request, response, next) {
   if (request.user?.role !== 'admin') {
     return response.status(403).json({ message: 'Administrator access is required.' })
   }
+
+  function isValidImage(image) {
+    if (typeof image !== 'string') return false
+    if (!image) return true
+    if (image.length <= 2048 && /^https?:\/\/\S+$/i.test(image)) return true
+    const match = image.match(/^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/)
+    if (!match || image.length > 3 * 1024 * 1024) return false
+    const bytes = Buffer.from(match[1], 'base64')
+    return bytes.length <= 2.25 * 1024 * 1024 && bytes.toString('base64') === match[1]
+  }
   return next()
 }
 
 const app = express()
 app.use(cors())
-app.use(express.json({ limit: '4mb' }))
+app.use(express.json({ limit: '4mb', strict: true }))
+app.use((request, response, next) => {
+  if (request.body === undefined) request.body = {}
+  if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body)) {
+    return response.status(400).json({ message: 'Request body must be a JSON object.' })
+  }
+  return next()
+})
 
-app.get('/api/health', (_request, response) => response.json({ status: 'ok', service: 'campusloop-api' }))
+app.get('/api/health', async (_request, response) => {
+  if (!databaseReady || !database) return response.status(503).json({ status: 'unavailable', service: 'campusloop-api', database: 'connecting' })
+  try {
+    await database.command({ ping: 1 })
+    response.json({ status: 'ok', service: 'campusloop-api', database: 'connected' })
+  } catch {
+    response.status(503).json({ status: 'unavailable', service: 'campusloop-api', database: 'disconnected' })
+  }
+})
 
 app.post('/api/auth/login', async (request, response) => {
   const { email, password } = request.body
+  if (typeof password !== 'string' || password.length > 128 || Buffer.byteLength(password, 'utf8') > 72) return response.status(401).json({ message: 'Email or password is incorrect.' })
   const data = await readData()
   const user = data.users.find(item => item.email.toLowerCase() === String(email || '').toLowerCase())
-  if (!user || !bcrypt.compareSync(String(password || ''), user.passwordHash)) return response.status(401).json({ message: 'Email or password is incorrect.' })
+  if (!user || !await bcrypt.compare(password, user.passwordHash)) return response.status(401).json({ message: 'Email or password is incorrect.' })
+  if (user.suspendedAt) return response.status(403).json({ message: 'This account has been suspended. Contact a campus administrator.' })
   response.json({ token: tokenFor(user), user: publicUser(user) })
 })
 
@@ -308,7 +350,8 @@ app.post('/api/auth/register', async (request, response) => {
   const normalizedEmail = String(email || '').trim().toLowerCase()
   const normalizedPhone = typeof phone === 'string' ? phone.trim() : ''
   const phoneDigits = normalizedPhone.replace(/\D/g, '')
-  if (!name || !branch || !year || !normalizedEmail || !password || String(password).length < 6 || !normalizedPhone) return response.status(400).json({ message: 'Name, branch, year, phone number, student email, and a password of at least 6 characters are required.' })
+  if (typeof name !== 'string' || !name.trim() || typeof branch !== 'string' || !branch.trim() || (typeof year !== 'string' && typeof year !== 'number') || !String(year).trim() || !normalizedEmail || typeof password !== 'string' || password.length < 6 || password.length > 128 || Buffer.byteLength(password, 'utf8') > 72 || !normalizedPhone) return response.status(400).json({ message: 'Name, branch, year, phone number, student email, and a password of 6 to 72 UTF-8 bytes are required.' })
+  if (typeof hostel !== 'string') return response.status(400).json({ message: 'Hostel must be text.' })
   if (!/^[^\s@]+@student\.nitw\.ac\.in$/.test(normalizedEmail)) return response.status(400).json({ message: 'Use your @student.nitw.ac.in student email address.' })
   if (!/^\+?[0-9().\-\s]+$/.test(normalizedPhone) || phoneDigits.length < 7 || phoneDigits.length > 15) return response.status(400).json({ message: 'Enter a valid phone number with 7 to 15 digits.' })
   if (String(name).trim().length > 100 || String(branch).trim().length > 100 || String(year).trim().length > 20 || String(hostel).trim().length > 100 || normalizedPhone.length > 25) return response.status(400).json({ message: 'Name, branch, year, hostel, or phone number is too long.' })
@@ -318,7 +361,7 @@ app.post('/api/auth/register', async (request, response) => {
   if (!role) return response.status(403).json({ message: 'A valid administrator setup key is required for this account.' })
   const data = await readData()
   if (data.users.some(user => user.email.toLowerCase() === normalizedEmail)) return response.status(409).json({ message: 'An account with this email already exists.' })
-  const user = { id: `user-${randomUUID()}`, name: name.trim(), branch: branch.trim(), year: String(year).trim(), hostel: String(hostel).trim(), phone: normalizedPhone, email: normalizedEmail, passwordHash: bcrypt.hashSync(String(password), 10), role, createdAt: new Date().toISOString() }
+  const user = { id: `user-${randomUUID()}`, name: name.trim(), branch: branch.trim(), year: String(year).trim(), hostel: hostel.trim(), phone: normalizedPhone, email: normalizedEmail, passwordHash: await bcrypt.hash(password, 10), role, createdAt: new Date().toISOString() }
   data.users.push(user)
   await writeData(data)
   response.status(201).json({ token: tokenFor(user), user: publicUser(user) })
@@ -326,19 +369,62 @@ app.post('/api/auth/register', async (request, response) => {
 
 app.get('/api/auth/me', requireAuth, (request, response) => response.json({ user: publicUser(request.user) }))
 
+app.get('/api/admin/dashboard', requireAuth, requireAdmin, (request, response) => {
+  const data = request.data
+  response.json({
+    stats: {
+      students: data.users.filter(user => user.role === 'student' && !user.suspendedAt).length,
+      suspendedUsers: data.users.filter(user => user.role === 'student' && user.suspendedAt).length,
+      resources: data.listings.filter(item => item.postType === 'resource' && item.status !== 'Removed').length,
+      openWantedRequests: data.listings.filter(item => item.postType === 'wanted' && item.status === 'Open').length,
+      pendingResourceRequests: data.requests.filter(item => item.status === 'Pending').length,
+      announcements: data.announcements.length,
+      openLostFound: data.lostFound.filter(item => item.status !== 'resolved').length,
+      upcomingEvents: data.events.filter(item => !item.date || item.date >= new Date().toISOString().slice(0, 10)).length,
+      unresolvedMaintenance: data.maintenanceRequests.filter(item => item.status !== 'Resolved').length,
+    },
+  })
+})
+
+app.get('/api/admin/users', requireAuth, requireAdmin, (request, response) => {
+  const users = request.data.users
+    .map(publicUser)
+    .sort((first, second) => first.name.localeCompare(second.name))
+  response.json({ users })
+})
+
+app.patch('/api/admin/users/:id/status', requireAuth, requireAdmin, async (request, response) => {
+  const { suspended } = request.body
+  if (typeof suspended !== 'boolean') return response.status(400).json({ message: 'Choose whether to suspend or restore the account.' })
+  const data = request.data
+  const user = data.users.find(item => item.id === request.params.id)
+  if (!user) return response.status(404).json({ message: 'Student account not found.' })
+  if (user.role === 'admin' || user.id === request.user.id) return response.status(403).json({ message: 'Administrator accounts cannot be suspended here.' })
+  if (suspended) user.suspendedAt ||= new Date().toISOString()
+  else delete user.suspendedAt
+  await writeData(data)
+  response.json({ user: publicUser(user) })
+})
+
 app.get('/api/listings', requireAuth, (request, response) => {
   const data = request.data
   const listings = data.listings
-    .filter(item => item.postType === 'wanted' && (item.status === 'Open' || item.ownerId === request.user.id))
+    .filter(item => item.postType === 'resource'
+      ? item.status !== 'Removed'
+      : item.postType === 'wanted' && (item.status === 'Open' || item.ownerId === request.user.id || request.user.role === 'admin'))
     .map(item => ({ ...item, saved: (item.savedBy || []).includes(request.user.id) }))
   response.json({ listings })
 })
 
 app.post('/api/listings', requireAuth, async (request, response) => {
-  const { title, category, description = '', image = '' } = request.body
+  const { title, category, description = '', image = '', postType = 'wanted', condition = 'Good', mode = 'Borrow' } = request.body
   const categories = ['Books', 'Electronics', 'Study gear', 'Room & living']
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 120 || !categories.includes(category)) {
     return response.status(400).json({ message: 'A title (up to 120 characters) and a valid category are required.' })
+  }
+  if (!['wanted', 'resource'].includes(postType)) return response.status(400).json({ message: 'Choose a valid resource listing type.' })
+  if (postType === 'resource' && (!['Borrow', 'Exchange', 'Give away'].includes(mode) || !['New', 'Like new', 'Good', 'Fair'].includes(condition))) {
+    return response.status(400).json({ message: 'Choose a valid exchange type and item condition.' })
   }
   if (typeof description !== 'string' || description.length > 500) return response.status(400).json({ message: 'The description must be 500 characters or fewer.' })
   if (typeof image !== 'string' || (image && (!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(image) || image.length > 3 * 1024 * 1024))) {
@@ -347,12 +433,13 @@ app.post('/api/listings', requireAuth, async (request, response) => {
   const data = request.data
   const listing = {
     id: `listing-${randomUUID()}`,
-    postType: 'wanted',
-    status: 'Open',
+    postType,
+    status: postType === 'wanted' ? 'Open' : 'Available',
     title: title.trim(),
     category,
     description: description.trim(),
     image,
+    ...(postType === 'resource' ? { condition, mode, availabilityStatus: 'Available' } : {}),
     ownerId: request.user.id,
     owner: request.user.name,
     initials: request.user.name.split(' ').map(part => part[0]).join(''),
@@ -365,10 +452,56 @@ app.post('/api/listings', requireAuth, async (request, response) => {
   response.status(201).json({ listing: { ...listing, saved: false } })
 })
 
+app.put('/api/listings/:id', requireAuth, async (request, response) => {
+  const data = request.data
+  const listing = data.listings.find(item => item.id === request.params.id && ['wanted', 'resource'].includes(item.postType))
+  if (!listing) return response.status(404).json({ message: 'Resource listing not found.' })
+  if (listing.ownerId !== request.user.id && request.user.role !== 'admin') return response.status(403).json({ message: 'Only the owner or an administrator can edit this listing.' })
+  const { title, category, description = '', image = '', condition = listing.condition, mode = listing.mode } = request.body
+  const categories = ['Books', 'Electronics', 'Study gear', 'Room & living']
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 120 || !categories.includes(category)) {
+    return response.status(400).json({ message: 'A title (up to 120 characters) and a valid category are required.' })
+  }
+  if (typeof description !== 'string' || description.length > 500) return response.status(400).json({ message: 'The description must be 500 characters or fewer.' })
+  if (typeof image !== 'string' || image.length > 3 * 1024 * 1024 || (image && !(/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(image) || /^https?:\/\/\S+$/i.test(image)))) {
+    return response.status(400).json({ message: 'Choose a resized JPEG image or a valid HTTP or HTTPS image URL.' })
+  }
+  if (listing.postType === 'resource' && (!['Borrow', 'Exchange', 'Give away'].includes(mode) || !['New', 'Like new', 'Good', 'Fair'].includes(condition))) {
+    return response.status(400).json({ message: 'Choose a valid exchange type and item condition.' })
+  }
+  Object.assign(listing, {
+    title: title.trim(),
+    category,
+    description: description.trim(),
+    image: image.trim(),
+    ...(listing.postType === 'resource' ? { condition, mode } : {}),
+  })
+  await writeData(data)
+  response.json({ listing: { ...listing, saved: (listing.savedBy || []).includes(request.user.id) } })
+})
+
+app.delete('/api/listings/:id', requireAuth, async (request, response) => {
+  const data = request.data
+  const index = data.listings.findIndex(item => item.id === request.params.id && ['wanted', 'resource'].includes(item.postType))
+  if (index < 0) return response.status(404).json({ message: 'Resource listing not found.' })
+  if (data.listings[index].ownerId !== request.user.id && request.user.role !== 'admin') return response.status(403).json({ message: 'You can only delete your own resource listing.' })
+  if (data.listings[index].postType === 'resource' && data.requests.some(item => item.listingId === request.params.id && ['Pending', 'Approved'].includes(item.status))) {
+    return response.status(409).json({ message: 'Cancel or complete active resource requests before deleting this listing.' })
+  }
+  const [listing] = data.listings.splice(index, 1)
+  if (listing.postType === 'wanted') {
+    data.offers = (data.offers || []).filter(offer => offer.listingId !== listing.id)
+    data.requests = (data.requests || []).filter(exchangeRequest => exchangeRequest.listingId !== listing.id)
+  }
+  await writeData(data)
+  response.json({ removed: true })
+})
+
 app.patch('/api/listings/:id/save', requireAuth, async (request, response) => {
   const data = request.data
   const listing = data.listings.find(item => item.id === request.params.id)
   if (!listing) return response.status(404).json({ message: 'Listing not found.' })
+  listing.savedBy ||= []
   const saved = listing.savedBy.includes(request.user.id)
   listing.savedBy = saved ? listing.savedBy.filter(id => id !== request.user.id) : [...listing.savedBy, request.user.id]
   await writeData(data)
@@ -379,7 +512,23 @@ app.post('/api/listings/:id/requests', requireAuth, async (request, response) =>
   const data = request.data
   const listing = data.listings.find(item => item.id === request.params.id)
   if (!listing) return response.status(404).json({ message: 'Listing not found.' })
-  const exchangeRequest = { id: `request-${randomUUID()}`, listingId: listing.id, requesterId: request.user.id, status: 'Pending', createdAt: new Date().toISOString() }
+  if (listing.postType !== 'resource' || listing.status !== 'Available' || listing.availabilityStatus === 'Borrowed') return response.status(409).json({ message: 'This resource is not currently available.' })
+  if (listing.ownerId === request.user.id) return response.status(403).json({ message: 'You cannot request your own resource.' })
+  if ((data.requests || []).some(item => item.listingId === listing.id && item.requesterId === request.user.id && ['Pending', 'Approved'].includes(item.status))) {
+    return response.status(409).json({ message: 'You already have an active request for this resource.' })
+  }
+  const message = typeof request.body.message === 'string' ? request.body.message.trim() : ''
+  if (message.length > 500) return response.status(400).json({ message: 'The request message must be 500 characters or fewer.' })
+  const exchangeRequest = {
+    id: `request-${randomUUID()}`,
+    listingId: listing.id,
+    requesterId: request.user.id,
+    ownerId: listing.ownerId,
+    message,
+    status: 'Pending',
+    requestedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+  }
   data.requests.push(exchangeRequest)
   await writeData(data)
   response.status(201).json({ request: exchangeRequest })
@@ -435,38 +584,106 @@ app.patch('/api/listings/:id/close', requireAuth, async (request, response) => {
 
 app.get('/api/requests/my', requireAuth, (request, response) => {
   const data = request.data
-  const requests = data.requests.filter(item => item.requesterId === request.user.id).map(item => ({ ...item, listing: data.listings.find(listing => listing.id === item.listingId) }))
+  const requests = data.requests
+    .filter(item => item.requesterId === request.user.id || item.ownerId === request.user.id || data.listings.find(listing => listing.id === item.listingId)?.ownerId === request.user.id)
+    .map(item => ({
+      ...item,
+      ownerId: item.ownerId || data.listings.find(listing => listing.id === item.listingId)?.ownerId,
+      listing: data.listings.find(listing => listing.id === item.listingId),
+      requesterName: data.users.find(user => user.id === item.requesterId)?.name || 'Campus student',
+      requesterEmail: data.users.find(user => user.id === item.requesterId)?.email || '',
+      reviewed: data.reviews.some(review => review.requestId === item.id && review.reviewerId === request.user.id),
+    }))
   response.json({ requests })
+})
+
+app.put('/api/requests/:id/approve', requireAuth, async (request, response) => {
+  const data = request.data
+  const exchangeRequest = data.requests.find(item => item.id === request.params.id)
+  if (!exchangeRequest) return response.status(404).json({ message: 'Resource request not found.' })
+  const listing = data.listings.find(item => item.id === exchangeRequest.listingId)
+  if (!listing || listing.ownerId !== request.user.id) return response.status(403).json({ message: 'Only the resource owner can approve this request.' })
+  if (exchangeRequest.status !== 'Pending' || listing.availabilityStatus === 'Borrowed') return response.status(409).json({ message: 'This request is no longer pending or the resource is already in use.' })
+  exchangeRequest.status = 'Approved'
+  exchangeRequest.approvedAt = new Date().toISOString()
+  listing.availabilityStatus = 'Borrowed'
+  await writeData(data)
+  response.json({ request: exchangeRequest, listing })
+})
+
+app.put('/api/requests/:id/reject', requireAuth, async (request, response) => {
+  const data = request.data
+  const exchangeRequest = data.requests.find(item => item.id === request.params.id)
+  if (!exchangeRequest) return response.status(404).json({ message: 'Resource request not found.' })
+  const listing = data.listings.find(item => item.id === exchangeRequest.listingId)
+  if (!listing || listing.ownerId !== request.user.id) return response.status(403).json({ message: 'Only the resource owner can reject this request.' })
+  if (exchangeRequest.status !== 'Pending') return response.status(409).json({ message: 'Only a pending request can be rejected.' })
+  exchangeRequest.status = 'Rejected'
+  exchangeRequest.rejectedAt = new Date().toISOString()
+  await writeData(data)
+  response.json({ request: exchangeRequest })
+})
+
+app.put('/api/requests/:id/cancel', requireAuth, async (request, response) => {
+  const data = request.data
+  const exchangeRequest = data.requests.find(item => item.id === request.params.id)
+  if (!exchangeRequest) return response.status(404).json({ message: 'Resource request not found.' })
+  if (exchangeRequest.requesterId !== request.user.id) return response.status(403).json({ message: 'Only the student who made this request can cancel it.' })
+  if (exchangeRequest.status !== 'Pending') return response.status(409).json({ message: 'Only a pending request can be cancelled.' })
+  exchangeRequest.status = 'Cancelled'
+  exchangeRequest.cancelledAt = new Date().toISOString()
+  await writeData(data)
+  response.json({ request: exchangeRequest })
+})
+
+app.put('/api/requests/:id/return', requireAuth, async (request, response) => {
+  const data = request.data
+  const exchangeRequest = data.requests.find(item => item.id === request.params.id)
+  if (!exchangeRequest) return response.status(404).json({ message: 'Resource request not found.' })
+  const listing = data.listings.find(item => item.id === exchangeRequest.listingId)
+  if (!listing || listing.ownerId !== request.user.id) return response.status(403).json({ message: 'Only the resource owner can mark it returned.' })
+  if (exchangeRequest.status !== 'Approved') return response.status(409).json({ message: 'Only an approved resource request can be marked returned.' })
+  exchangeRequest.status = 'Returned'
+  exchangeRequest.returnedAt = new Date().toISOString()
+  listing.availabilityStatus = 'Available'
+  await writeData(data)
+  response.json({ request: exchangeRequest, listing })
 })
 
 app.get('/api/events', requireAuth, (request, response) => {
   const data = request.data
   const visibleCount = new Map()
-  const events = data.events.filter(event => {
+  const events = request.user.role === 'admin' ? data.events : data.events.filter(event => {
     const count = visibleCount.get(event.clubId) || 0
     if (count >= 2) return false
     visibleCount.set(event.clubId, count + 1)
     return true
   })
-  response.json({ events: events.map(event => ({
-    ...event,
-    registered: data.registrations.some(registration => registration.eventId === event.id && registration.userId === request.user.id),
-  })) })
+  response.json({ events: events.map(event => {
+    const registrationCount = data.registrations.filter(registration => registration.eventId === event.id).length
+    return {
+      ...event,
+      registrationCount,
+      spots: event.capacity ? Math.max(0, event.capacity - registrationCount) : null,
+      registered: data.registrations.some(registration => registration.eventId === event.id && registration.userId === request.user.id),
+    }
+  }) })
 })
 
 app.get('/api/clubs', requireAuth, (request, response) => {
   const data = request.data
   const result = data.clubs.map(club => {
     const isMember = data.clubMemberships.some(member => member.clubId === club.id && member.userId === request.user.id)
+    const canApproveRequests = isMember || request.user.role === 'admin'
     const joinRequest = data.clubJoinRequests.find(item => item.clubId === club.id && item.userId === request.user.id && item.status === 'pending')
-    const pendingRequests = isMember
+    const pendingRequests = canApproveRequests
       ? data.clubJoinRequests.filter(item => item.clubId === club.id && item.status === 'pending').map(item => ({
         id: item.id,
         userId: item.userId,
         name: data.users.find(user => user.id === item.userId)?.name || 'Campus student',
       }))
       : []
-    return { ...club, isMember, requestPending: Boolean(joinRequest), pendingRequests }
+    return { ...club, isMember, canApproveRequests, requestPending: Boolean(joinRequest), pendingRequests }
   })
   response.json({ clubs: result })
 })
@@ -478,15 +695,6 @@ app.post('/api/clubs/:id/join-requests', requireAuth, async (request, response) 
   if (data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(409).json({ message: 'You are already a member of this club.' })
   if (data.clubJoinRequests.some(item => item.clubId === club.id && item.userId === request.user.id && item.status === 'pending')) return response.status(409).json({ message: 'Your request to join this club is already pending.' })
   const joinRequest = { id: `club-request-${randomUUID()}`, clubId: club.id, userId: request.user.id, status: 'pending', createdAt: new Date().toISOString() }
-  if (!data.clubMemberships.some(item => item.clubId === club.id)) {
-    joinRequest.status = 'approved'
-    joinRequest.approvedAt = new Date().toISOString()
-    joinRequest.approvedBy = request.user.id
-    data.clubMemberships.push({ clubId: club.id, userId: request.user.id, joinedAt: joinRequest.approvedAt })
-    data.clubJoinRequests.push(joinRequest)
-    await writeData(data)
-    return response.status(201).json({ request: joinRequest, approved: true })
-  }
   data.clubJoinRequests.push(joinRequest)
   await writeData(data)
   response.status(201).json({ request: joinRequest })
@@ -496,7 +704,7 @@ app.post('/api/clubs/:id/join-requests/:requestId/approve', requireAuth, async (
   const data = request.data
   const club = data.clubs.find(item => item.id === request.params.id)
   if (!club) return response.status(404).json({ message: 'Club not found.' })
-  if (!data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'Only an existing club member can approve membership requests.' })
+  if (request.user.role !== 'admin' && !data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'Only an existing club member or administrator can approve membership requests.' })
   const joinRequest = data.clubJoinRequests.find(item => item.id === request.params.requestId && item.clubId === club.id)
   if (!joinRequest || joinRequest.status !== 'pending') return response.status(404).json({ message: 'Pending membership request not found.' })
   joinRequest.status = 'approved'
@@ -508,17 +716,19 @@ app.post('/api/clubs/:id/join-requests/:requestId/approve', requireAuth, async (
 })
 
 app.post('/api/events', requireAuth, async (request, response) => {
-  const { title, type, date, time, place, description = '', clubId } = request.body
+  const { title, type, date, time, place, description = '', clubId, capacity = 0 } = request.body
   const data = request.data
   const club = data.clubs.find(item => item.id === clubId)
   if (!club) return response.status(400).json({ message: 'Choose a valid organizing club.' })
-  if (!data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'You must be an approved member of the organizing club to post an event.' })
+  if (request.user.role !== 'admin' && !data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'You must be an approved member of the organizing club to post an event.' })
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 100 || typeof type !== 'string' || !type.trim() || type.trim().length > 60) return response.status(400).json({ message: 'Event name and type are required and must be within 100 and 60 characters.' })
   const parsedDate = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00.000Z`) : null
   const today = new Date().toISOString().slice(0, 10)
   if (!parsedDate || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date || date < today) return response.status(400).json({ message: 'Choose a valid date today or later.' })
   if (typeof time !== 'string' || !time.trim() || time.trim().length > 80 || typeof place !== 'string' || !place.trim() || place.trim().length > 120) return response.status(400).json({ message: 'Event time and location are required.' })
   if (typeof description !== 'string' || description.length > 500) return response.status(400).json({ message: 'Event details must be 500 characters or fewer.' })
+  const eventCapacity = capacity === '' || capacity === null ? 0 : Number(capacity)
+  if (!Number.isInteger(eventCapacity) || eventCapacity < 0 || eventCapacity > 5000) return response.status(400).json({ message: 'Capacity must be a whole number from 1 to 5,000, or left empty for unlimited registration.' })
   const upcomingCount = data.events.filter(event => event.clubId === club.id && (!event.date || event.date >= today)).length
   if (upcomingCount >= 2) return response.status(409).json({ message: 'This club already has two upcoming events listed.' })
   const event = {
@@ -534,7 +744,8 @@ app.post('/api/events', requireAuth, async (request, response) => {
     host: club.name,
     clubId: club.id,
     color: ['mint', 'purple', 'orange', 'blue'][data.events.length % 4],
-    spots: 0,
+    spots: eventCapacity || null,
+    capacity: eventCapacity || null,
     image: '',
     createdBy: request.user.id,
   }
@@ -548,9 +759,9 @@ app.delete('/api/events/:id', requireAuth, async (request, response) => {
   const eventIndex = data.events.findIndex(item => item.id === request.params.id)
   if (eventIndex < 0) return response.status(404).json({ message: 'Event not found.' })
   const event = data.events[eventIndex]
-  if (!data.clubMemberships.some(item => item.clubId === event.clubId && item.userId === request.user.id)) return response.status(403).json({ message: 'Only an approved member of the organizing club can remove this event.' })
+  if (request.user.role !== 'admin' && !data.clubMemberships.some(item => item.clubId === event.clubId && item.userId === request.user.id)) return response.status(403).json({ message: 'Only an approved member of the organizing club can remove this event.' })
   const today = new Date().toISOString().slice(0, 10)
-  if (!event.date || event.date >= today) return response.status(409).json({ message: 'An event can only be removed after its scheduled date has passed.' })
+  if (request.user.role !== 'admin' && (!event.date || event.date >= today)) return response.status(409).json({ message: 'An event can only be removed after its scheduled date has passed.' })
   data.events.splice(eventIndex, 1)
   data.registrations = data.registrations.filter(registration => registration.eventId !== event.id)
   await writeData(data)
@@ -563,11 +774,16 @@ app.post('/api/events/:id/registration', requireAuth, async (request, response) 
   if (!event) return response.status(404).json({ message: 'Event not found.' })
   const registrationIndex = data.registrations.findIndex(item => item.eventId === event.id && item.userId === request.user.id)
   const registered = registrationIndex >= 0
+  if (!registered && event.date && event.date < new Date().toISOString().slice(0, 10)) return response.status(409).json({ message: 'Registration for this event has closed.' })
+  if (!registered && event.capacity && data.registrations.filter(item => item.eventId === event.id).length >= event.capacity) {
+    return response.status(409).json({ message: 'This event is full. Check with the organizer for cancellations or a waitlist.' })
+  }
   data.registrations = registered
     ? data.registrations.filter((_, index) => index !== registrationIndex)
     : [...data.registrations, { eventId: event.id, userId: request.user.id, joinedAt: new Date().toISOString() }]
   await writeData(data)
-  response.json({ registered: !registered })
+  const registrationCount = data.registrations.filter(item => item.eventId === event.id).length
+  response.json({ registered: !registered, registrationCount, spots: event.capacity ? Math.max(0, event.capacity - registrationCount) : null })
 })
 
 app.get('/api/events/:id/guest-list', requireAuth, (request, response) => {
@@ -575,7 +791,7 @@ app.get('/api/events/:id/guest-list', requireAuth, (request, response) => {
   const event = data.events.find(item => item.id === request.params.id)
   if (!event) return response.status(404).json({ message: 'Event not found.' })
   const isOrganizer = data.clubMemberships.some(member => member.clubId === event.clubId && member.userId === request.user.id)
-  if (!isOrganizer) return response.status(403).json({ message: 'Only approved members of the organizing club can view this guest list.' })
+  if (!isOrganizer && request.user.role !== 'admin') return response.status(403).json({ message: 'Only approved organizers or administrators can view this guest list.' })
   const attendees = data.registrations
     .filter(registration => registration.eventId === event.id)
     .map(registration => {
@@ -608,8 +824,9 @@ app.get('/api/announcements', requireAuth, (request, response) => {
 
 app.post('/api/announcements', requireAuth, requireAdmin, async (request, response) => {
   const { title, category = 'General', content = '', pinned = false } = request.body
-  if (typeof title !== 'string' || !title.trim()) return response.status(400).json({ message: 'Announcement title is required.' })
-  if (typeof content !== 'string' || !content.trim()) return response.status(400).json({ message: 'Announcement details are required.' })
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 120) return response.status(400).json({ message: 'Announcement title is required and must be 120 characters or fewer.' })
+  if (typeof content !== 'string' || !content.trim() || content.trim().length > 3000) return response.status(400).json({ message: 'Announcement details are required and must be 3,000 characters or fewer.' })
+  if (typeof category !== 'string' || !category.trim() || category.trim().length > 60 || typeof pinned !== 'boolean') return response.status(400).json({ message: 'Choose a category of 60 characters or fewer and a valid pin setting.' })
   const data = request.data
   const announcement = {
     id: `announcement-${randomUUID()}`,
@@ -642,8 +859,10 @@ app.put('/api/announcements/:id', requireAuth, requireAdmin, async (request, res
   if (typeof title !== 'string' || !title.trim() || typeof content !== 'string' || !content.trim()) {
     return response.status(400).json({ message: 'Announcement title and details are required.' })
   }
+  if (title.trim().length > 120 || content.trim().length > 3000) return response.status(400).json({ message: 'Announcement title or details are too long.' })
+  if (typeof category !== 'string' || !category.trim() || category.trim().length > 60 || typeof pinned !== 'boolean') return response.status(400).json({ message: 'Choose a category of 60 characters or fewer and a valid pin setting.' })
   announcement.title = title.trim()
-  announcement.category = typeof category === 'string' && category.trim() ? category.trim() : 'General'
+  announcement.category = category.trim()
   announcement.content = content.trim()
   announcement.pinned = Boolean(pinned)
   await writeData(data)
@@ -669,16 +888,22 @@ app.get('/api/lost-found/:id', requireAuth, (request, response) => {
 })
 
 app.post('/api/lost-found', requireAuth, async (request, response) => {
-  const { title, type = 'lost', description = '', location = '', date = '', image = '' } = request.body
-  if (typeof title !== 'string' || !title.trim()) return response.status(400).json({ message: 'Item title is required.' })
+  const { title, type = 'lost', category = 'Other', description = '', location = '', date = '', image = '' } = request.body
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 120) return response.status(400).json({ message: 'Item title is required and must be 120 characters or fewer.' })
   if (!['lost', 'found'].includes(type)) return response.status(400).json({ message: 'Report type must be lost or found.' })
-  if (typeof description !== 'string' || !description.trim()) return response.status(400).json({ message: 'Please describe the item.' })
-  if (typeof location !== 'string' || !location.trim()) return response.status(400).json({ message: 'Location is required.' })
+  if (!['Accessories', 'Electronics', 'Documents', 'Clothing', 'Other'].includes(category)) return response.status(400).json({ message: 'Choose a valid item category.' })
+  if (typeof description !== 'string' || !description.trim() || description.trim().length > 1500) return response.status(400).json({ message: 'Please describe the item in 1,500 characters or fewer.' })
+  if (typeof location !== 'string' || !location.trim() || location.trim().length > 160) return response.status(400).json({ message: 'Location is required and must be 160 characters or fewer.' })
+  if (date && (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(`${date}T00:00:00.000Z`).getTime()) || new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date || date > new Date().toISOString().slice(0, 10))) {
+    return response.status(400).json({ message: 'Choose a valid date today or earlier.' })
+  }
+  if (!isValidImage(image)) return response.status(400).json({ message: 'Choose a valid image URL or an uploaded JPEG under 2.25 MB.' })
   const data = request.data
   const item = {
     id: `lost-found-${randomUUID()}`,
     title: title.trim(),
     type,
+    category,
     description: description.trim(),
     location: location.trim(),
     date: typeof date === 'string' ? date : '',
@@ -699,14 +924,18 @@ app.put('/api/lost-found/:id', requireAuth, async (request, response) => {
   const data = request.data
   const item = (data.lostFound || []).find(entry => entry.id === request.params.id)
   if (!item) return response.status(404).json({ message: 'Report not found.' })
-  if (item.reporterId !== request.user.id) return response.status(403).json({ message: 'You can only edit your own report.' })
-  const { title, type, description, location, date, image } = request.body
-  if (typeof title === 'string' && title.trim()) item.title = title.trim()
-  if (type === 'lost' || type === 'found') item.type = type
-  if (typeof description === 'string' && description.trim()) item.description = description.trim()
-  if (typeof location === 'string' && location.trim()) item.location = location.trim()
-  if (typeof date === 'string') item.date = date
-  if (typeof image === 'string') item.image = image.trim()
+  if (item.reporterId !== request.user.id && request.user.role !== 'admin') return response.status(403).json({ message: 'You can only edit your own report.' })
+  const { title, type, category, description, location, date, image } = request.body
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 120) return response.status(400).json({ message: 'Item title is required and must be 120 characters or fewer.' })
+  if (!['lost', 'found'].includes(type)) return response.status(400).json({ message: 'Report type must be lost or found.' })
+  if (!['Accessories', 'Electronics', 'Documents', 'Clothing', 'Other'].includes(category)) return response.status(400).json({ message: 'Choose a valid item category.' })
+  if (typeof description !== 'string' || !description.trim() || description.trim().length > 1500) return response.status(400).json({ message: 'Please describe the item in 1,500 characters or fewer.' })
+  if (typeof location !== 'string' || !location.trim() || location.trim().length > 160) return response.status(400).json({ message: 'Location is required and must be 160 characters or fewer.' })
+  if (typeof date !== 'string' || (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(`${date}T00:00:00.000Z`).getTime()) || new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date || date > new Date().toISOString().slice(0, 10)))) {
+    return response.status(400).json({ message: 'Choose a valid date today or earlier.' })
+  }
+  if (!isValidImage(image)) return response.status(400).json({ message: 'Choose a valid image URL or an uploaded JPEG under 2.25 MB.' })
+  Object.assign(item, { title: title.trim(), type, category, description: description.trim(), location: location.trim(), date, image: image.trim() })
   await writeData(data)
   response.json({ item })
 })
@@ -733,7 +962,10 @@ app.delete('/api/lost-found/:id', requireAuth, async (request, response) => {
 
 app.get('/api/maintenance', requireAuth, (request, response) => {
   const data = request.data
-  const requests = [...(data.maintenanceRequests || [])].sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
+  const visibleRequests = request.user.role === 'admin'
+    ? data.maintenanceRequests || []
+    : (data.maintenanceRequests || []).filter(item => item.userId === request.user.id)
+  const requests = [...visibleRequests].sort((first, second) => new Date(second.createdAt) - new Date(first.createdAt))
   response.json({ requests })
 })
 
@@ -745,9 +977,12 @@ app.get('/api/maintenance/my', requireAuth, (request, response) => {
 
 app.post('/api/maintenance', requireAuth, async (request, response) => {
   const { title, category = 'Electrical', location = '', description = '', image = '' } = request.body
-  if (typeof title !== 'string' || !title.trim()) return response.status(400).json({ message: 'Issue title is required.' })
-  if (typeof location !== 'string' || !location.trim()) return response.status(400).json({ message: 'Location is required.' })
-  if (typeof description !== 'string' || !description.trim()) return response.status(400).json({ message: 'Describe the issue clearly.' })
+  const categories = ['Electrical', 'Water', 'Cleanliness', 'Furniture', 'Internet']
+  if (typeof title !== 'string' || !title.trim() || title.trim().length > 120) return response.status(400).json({ message: 'Issue title is required and must be 120 characters or fewer.' })
+  if (!categories.includes(category)) return response.status(400).json({ message: 'Choose a valid maintenance category.' })
+  if (typeof location !== 'string' || !location.trim() || location.trim().length > 160) return response.status(400).json({ message: 'Location is required and must be 160 characters or fewer.' })
+  if (typeof description !== 'string' || !description.trim() || description.trim().length > 1500) return response.status(400).json({ message: 'Describe the issue in 1,500 characters or fewer.' })
+  if (!isValidImage(image)) return response.status(400).json({ message: 'Choose a valid image URL or an uploaded JPEG under 2.25 MB.' })
   const data = request.data
   const requestEntry = {
     id: `maintenance-${randomUUID()}`,
@@ -772,8 +1007,28 @@ app.put('/api/maintenance/:id/status', requireAuth, requireAdmin, async (request
   const data = request.data
   const requestEntry = (data.maintenanceRequests || []).find(item => item.id === request.params.id)
   if (!requestEntry) return response.status(404).json({ message: 'Maintenance request not found.' })
+  const nextStatus = requestEntry.status === 'Submitted' ? 'In Progress' : requestEntry.status === 'In Progress' ? 'Resolved' : null
+  if (status !== requestEntry.status && status !== nextStatus) return response.status(409).json({ message: 'Maintenance requests must move from Submitted to In Progress to Resolved.' })
   requestEntry.status = status
   if (status !== 'Resolved') delete requestEntry.confirmedByUserAt
+  await writeData(data)
+  response.json({ request: requestEntry })
+})
+
+app.put('/api/maintenance/:id/assign', requireAuth, requireAdmin, async (request, response) => {
+  const assigneeId = typeof request.body.userId === 'string' ? request.body.userId.trim() : ''
+  const data = request.data
+  const requestEntry = (data.maintenanceRequests || []).find(item => item.id === request.params.id)
+  if (!requestEntry) return response.status(404).json({ message: 'Maintenance request not found.' })
+  if (assigneeId) {
+    const assignee = data.users.find(user => user.id === assigneeId && user.role === 'student' && !user.suspendedAt)
+    if (!assignee) return response.status(400).json({ message: 'Choose an active student account for this assignment.' })
+    requestEntry.assignedTo = assignee.id
+    requestEntry.assignedToName = assignee.name
+  } else {
+    delete requestEntry.assignedTo
+    delete requestEntry.assignedToName
+  }
   await writeData(data)
   response.json({ request: requestEntry })
 })
@@ -790,20 +1045,32 @@ app.put('/api/maintenance/:id/confirm', requireAuth, async (request, response) =
 })
 
 app.post('/api/reviews', requireAuth, async (request, response) => {
-  const { resourceId = '', userId = '', rating = 5, comment = '' } = request.body
-  if (typeof rating !== 'number' || rating < 1 || rating > 5) return response.status(400).json({ message: 'Rating must be between 1 and 5.' })
+  const { requestId, rating, comment = '' } = request.body
+  if (typeof requestId !== 'string' || !requestId) return response.status(400).json({ message: 'A completed resource request is required for a review.' })
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) return response.status(400).json({ message: 'Rating must be a whole number between 1 and 5.' })
+  if (typeof comment !== 'string' || comment.length > 500) return response.status(400).json({ message: 'Review comments must be 500 characters or fewer.' })
   const data = request.data
+  const exchangeRequest = data.requests.find(item => item.id === requestId)
+  if (!exchangeRequest || exchangeRequest.status !== 'Returned') return response.status(409).json({ message: 'Reviews are available only after a resource has been returned.' })
+  if (exchangeRequest.requesterId !== request.user.id) return response.status(403).json({ message: 'Only the student who borrowed the resource can review this exchange.' })
+  if (data.reviews.some(item => item.requestId === exchangeRequest.id && item.reviewerId === request.user.id)) return response.status(409).json({ message: 'You have already reviewed this exchange.' })
+  const reviewedUserId = exchangeRequest.ownerId || data.listings.find(item => item.id === exchangeRequest.listingId)?.ownerId
+  if (!reviewedUserId || reviewedUserId === request.user.id) return response.status(409).json({ message: 'This exchange cannot be reviewed.' })
   const review = {
     id: `review-${randomUUID()}`,
-    resourceId: String(resourceId || 'campusloop'),
-    userId: String(userId || request.user.id),
+    resourceId: exchangeRequest.listingId,
+    requestId: exchangeRequest.id,
+    userId: reviewedUserId,
     reviewerId: request.user.id,
     reviewerName: request.user.name,
     rating,
-    comment: typeof comment === 'string' ? comment.trim() : '',
+    comment: comment.trim(),
     createdAt: new Date().toISOString(),
   }
   data.reviews.push(review)
+  const owner = data.users.find(user => user.id === reviewedUserId)
+  const ownerReviews = data.reviews.filter(item => item.userId === reviewedUserId)
+  if (owner) owner.rating = ownerReviews.reduce((total, item) => total + item.rating, 0) / ownerReviews.length
   await writeData(data)
   response.status(201).json({ review })
 })
@@ -816,24 +1083,83 @@ app.get('/api/users/:id/reviews', requireAuth, (request, response) => {
 
 app.use((error, _request, response, _next) => {
   console.error('CampusLoop API request failed:', error)
-  response.status(error.status || 500).json({ message: error.status ? error.message : 'The server could not complete the request.' })
+  if (response.headersSent) return
+  if (error.type === 'entity.parse.failed') return response.status(400).json({ message: 'Request body contains invalid JSON.' })
+  if (error.type === 'entity.too.large') return response.status(413).json({ message: 'Request body is too large. Choose a smaller image or remove optional content.' })
+  if (error.code === 11000) return response.status(409).json({ message: 'This record already exists. Refresh the page and try again.' })
+  if (error.code === 112 || error.hasErrorLabel?.('TransientTransactionError')) return response.status(503).json({ message: 'The database is processing another update. Please retry in a moment.' })
+  if (error.name === 'MongoServerSelectionError' || error.name === 'MongoNetworkError' || error.name === 'MongoNetworkTimeoutError') {
+    return response.status(503).json({ message: 'The campus database is temporarily unavailable. Please try again shortly.' })
+  }
+  response.status(error.status || 500).json({ message: error.status ? error.message : 'The server could not complete the request. Please retry; contact support if the problem continues.' })
 })
 
 async function startServer() {
   if (!mongoUri) throw new Error('MONGODB_URI is required. Configure the MongoDB Atlas connection string in your .env file.')
   if (!jwtSecret || jwtSecret.length < 32) throw new Error('JWT_SECRET is required and must contain at least 32 characters.')
 
-  mongoClient = new MongoClient(mongoUri)
-  await mongoClient.connect()
-  database = mongoClient.db(databaseName)
-  stateCollection = database.collection('_campusloop_state')
-  await initializeDatabase()
-  await database.collection('users').createIndex({ email: 1 }, { unique: true })
-  app.listen(port, () => console.log(`CampusLoop API connected to MongoDB database "${databaseName}" on http://localhost:${port}`))
+  const server = app.listen(port, () => console.log(`CampusLoop API listening on http://localhost:${port}; waiting for MongoDB readiness.`))
+  let shuttingDown = false
+  const shutdown = signal => {
+    shuttingDown = true
+    console.log(`CampusLoop API received ${signal}; closing connections.`)
+    server.close(async () => {
+      try {
+        await mongoClient?.close()
+        process.exit(0)
+      } catch (error) {
+        console.error('CampusLoop could not close MongoDB cleanly:', error.message)
+        process.exit(1)
+      }
+    })
+    setTimeout(() => process.exit(1), 10000).unref()
+  }
+  process.once('SIGINT', () => shutdown('SIGINT'))
+  process.once('SIGTERM', () => shutdown('SIGTERM'))
+
+  let retryDelay = 1000
+  while (!shuttingDown && !databaseReady) {
+    try {
+      mongoClient = new MongoClient(mongoUri, { serverSelectionTimeoutMS: 10000, connectTimeoutMS: 10000 })
+      await mongoClient.connect()
+      database = mongoClient.db(databaseName)
+      stateCollection = database.collection('_campusloop_state')
+      await initializeDatabase()
+      await database.collection('users').createIndex({ email: 1 }, { unique: true })
+      databaseReady = true
+      console.log(`CampusLoop connected to MongoDB database "${databaseName}".`)
+    } catch (error) {
+      databaseReady = false
+      console.error(`CampusLoop database is not ready: ${error.message}`)
+      if (mongoClient) {
+        try {
+          await mongoClient.close()
+        } catch (closeError) {
+          console.error('CampusLoop could not close the failed MongoDB connection:', closeError.message)
+        }
+      }
+      mongoClient = undefined
+      database = undefined
+      stateCollection = undefined
+      if (!['MongoServerSelectionError', 'MongoNetworkError', 'MongoNetworkTimeoutError'].includes(error.name)) {
+        console.error('CampusLoop will keep the API available, but database initialization needs configuration or data repair.')
+        return
+      }
+      console.error(`Retrying MongoDB connection in ${Math.ceil(retryDelay / 1000)} second(s).`)
+      await new Promise(resolve => setTimeout(resolve, retryDelay))
+      retryDelay = Math.min(retryDelay * 2, 30000)
+    }
+  }
 }
 
 startServer().catch(async error => {
   console.error('CampusLoop failed to start:', error.message)
-  if (mongoClient) await mongoClient.close()
+  if (mongoClient) {
+    try {
+      await mongoClient.close()
+    } catch (closeError) {
+      console.error('CampusLoop could not close MongoDB after startup failure:', closeError.message)
+    }
+  }
   process.exitCode = 1
 })

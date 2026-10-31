@@ -12,6 +12,7 @@ import {
   ArrowRight,
   Bell,
   Bookmark,
+  Camera,
   CalendarDays,
   Check,
   ChevronRight,
@@ -30,7 +31,9 @@ import {
   Plus,
   Search,
   Settings,
+  ShieldCheck,
   Sparkles,
+  Star,
   Ticket,
   UserRound,
   UsersRound,
@@ -45,6 +48,59 @@ const initialListings = [
   { id: 3, title: 'Sony WH-1000XM4 Headphones', category: 'Electronics', condition: 'Excellent', mode: 'Borrow', price: 'Free', owner: 'Diya Shah', initials: 'DS', color: 'green', image: 'https://images.unsplash.com/photo-1546435770-a3e426bf472b?auto=format&fit=crop&w=900&q=80', saved: false },
   { id: 4, title: 'IKEA Desk Lamp', category: 'Room & living', condition: 'Good', mode: 'Give away', price: 'Free', owner: 'Kabir Singh', initials: 'KS', color: 'yellow', image: 'https://images.unsplash.com/photo-1507473885765-e6ed057f782c?auto=format&fit=crop&w=900&q=80', saved: false },
 ]
+function viewFromLocation() {
+  const view = window.location.hash.slice(1)
+  return validViews.has(view) ? view : 'overview'
+}
+
+async function processImageFile(file) {
+  if (!file) throw new Error('Choose an image first.')
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 8 * 1024 * 1024) {
+    throw new Error('Choose a JPEG, PNG, or WebP image under 8 MB.')
+  }
+  const source = await new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(new Error('The selected image could not be read.'))
+    reader.readAsDataURL(file)
+  })
+  const image = await new Promise((resolve, reject) => {
+    const loadedImage = new Image()
+    loadedImage.onload = () => resolve(loadedImage)
+    loadedImage.onerror = () => reject(new Error('The selected image could not be opened.'))
+    loadedImage.src = source
+  })
+  const scale = Math.min(1, 1000 / image.width, 800 / image.height)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(image.width * scale))
+  canvas.height = Math.max(1, Math.round(image.height * scale))
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('Image processing is not available in this browser.')
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  const resizedImage = canvas.toDataURL('image/jpeg', .76)
+  if (resizedImage.length > 3 * 1024 * 1024) throw new Error('That image is still too large after resizing. Choose a smaller photo.')
+  return resizedImage
+}
+
+function ImageUploadControls({ image, onChange, onError }) {
+  const selectImage = async event => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      onChange(await processImageFile(file))
+      onError('')
+    } catch (error) {
+      onError(error instanceof Error ? error.message : 'The selected image could not be processed.')
+    }
+  }
+  return <div className="image-upload-controls">
+    <label className="image-picker"><ImagePlus size={17} /><span>{image ? 'Change image' : 'Upload image'}</span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={selectImage} /></label>
+    <label className="image-picker"><Camera size={17} /><span>Take a photo</span><input type="file" accept="image/*" capture="environment" onChange={selectImage} /></label>
+    {image && <button type="button" className="image-search-button" onClick={() => { onChange(''); onError('') }}>Remove image</button>}
+    {image && <img className="request-image-preview" src={image} alt="Selected image preview" />}
+  </div>
+}
 
 const events = [
   { id: 'event-yrc-blood-donation', month: 'TBA', day: '—', title: 'Blood Donation Camp', type: 'Community service', time: 'To be announced', place: 'Student Activity Centre', host: 'Youth Red Cross (YRC)', color: 'mint', description: 'A campus blood donation drive organized by YRC.' },
@@ -61,29 +117,75 @@ const navItems = [
   { id: 'lost-found', label: 'Lost & Found', icon: Compass },
   { id: 'maintenance', label: 'Maintenance', icon: Settings },
   { id: 'profile', label: 'My profile', icon: UserRound },
+  { id: 'admin', label: 'Admin dashboard', icon: ShieldCheck, adminOnly: true },
 ]
+const validViews = new Set(navItems.map(item => item.id))
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
 
 async function apiFetch(path, options = {}) {
-  const token = sessionStorage.getItem('campusloop-token')
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers },
-  })
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(body.message || 'Something went wrong. Please try again.')
-  return body
+  const retryableRead = !options.method || options.method.toUpperCase() === 'GET'
+  let lastError
+  for (let attempt = 0; attempt < (retryableRead ? 2 : 1); attempt += 1) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15000)
+    try {
+      const token = sessionStorage.getItem('campusloop-token')
+      const response = await fetch(`${API_URL}${path}`, {
+        ...options,
+        signal: options.signal || controller.signal,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers },
+      })
+      const body = await response.json().catch(() => ({}))
+      if (response.status === 401 || (path === '/auth/me' && response.status === 403)) {
+        sessionStorage.removeItem('campusloop-token')
+        window.dispatchEvent(new CustomEvent('campusloop-session-expired', { detail: { message: body.message || 'Your session ended. Please sign in again.' } }))
+      }
+      if (!response.ok) {
+        const error = new Error(body.message || `Request failed (${response.status}). Please try again.`)
+        error.status = response.status
+        if (response.status === 409 && body.message?.startsWith('Campus data changed in another session')) {
+          window.dispatchEvent(new Event('campusloop-stale-data'))
+        }
+        if (retryableRead && response.status >= 500 && attempt === 0) {
+          lastError = error
+          await new Promise(resolve => setTimeout(resolve, 350))
+          continue
+        }
+        throw error
+      }
+      window.dispatchEvent(new CustomEvent('campusloop-api-status', { detail: { available: true } }))
+      return body
+    } catch (error) {
+      lastError = error
+      if (error.name === 'AbortError') lastError = new Error('The server took too long to respond. Check your connection and retry.')
+      if (error.name === 'TypeError') lastError = new Error('Cannot reach CampusLoop. Check that the API is running and your network is online.')
+      if (retryableRead && attempt === 0 && (error.name === 'TypeError' || error.status >= 500 || error.name === 'AbortError')) {
+        await new Promise(resolve => setTimeout(resolve, 350))
+        continue
+      }
+      if (error.name === 'TypeError' || error.name === 'AbortError' || error.status >= 500) {
+        window.dispatchEvent(new CustomEvent('campusloop-api-status', { detail: { available: false } }))
+      }
+      throw lastError
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+  throw lastError || new Error('The request could not be completed. Please retry.')
 }
 
 function App() {
-  const [activeView, setActiveView] = useState('overview')
+  const [activeView, setActiveView] = useState(viewFromLocation)
   const [navigationOpen, setNavigationOpen] = useState(false)
   const [listings, setListings] = useState([])
   const [events, setEvents] = useState([])
   const [clubs, setClubs] = useState([])
   const [registered, setRegistered] = useState([])
   const [offers, setOffers] = useState([])
+  const [resourceRequests, setResourceRequests] = useState([])
+  const [adminStats, setAdminStats] = useState(null)
+  const [adminUsers, setAdminUsers] = useState([])
   const [announcements, setAnnouncements] = useState([])
   const [lostFoundItems, setLostFoundItems] = useState([])
   const [maintenanceRequests, setMaintenanceRequests] = useState([])
@@ -95,18 +197,52 @@ function App() {
   const [showAuth, setShowAuth] = useState(false)
   const [selectedEvent, setSelectedEvent] = useState(null)
   const [selectedListing, setSelectedListing] = useState(null)
+  const [listingToEdit, setListingToEdit] = useState(null)
+  const [selectedResource, setSelectedResource] = useState(null)
   const [showNotifications, setShowNotifications] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const [apiUnavailable, setApiUnavailable] = useState(false)
+  const [authNotice, setAuthNotice] = useState('')
+  const registrationInProgress = useRef(new Set())
+
+  useEffect(() => {
+    const expireSession = event => {
+      setProfile(null)
+      setLoadError('')
+      setAuthNotice(event.detail?.message || 'Your session ended. Please sign in again.')
+    }
+    window.addEventListener('campusloop-session-expired', expireSession)
+    return () => window.removeEventListener('campusloop-session-expired', expireSession)
+  }, [])
+  useEffect(() => {
+    const onApiStatus = event => setApiUnavailable(!event.detail.available)
+    window.addEventListener('campusloop-api-status', onApiStatus)
+    return () => window.removeEventListener('campusloop-api-status', onApiStatus)
+  }, [])
+  useEffect(() => {
+    const reloadStaleData = () => {
+      setToast({ message: 'Campus data changed in another session. The latest data is loading; retry your action afterward.', icon: CircleHelp })
+      refreshApplication()
+    }
+    window.addEventListener('campusloop-stale-data', reloadStaleData)
+    return () => window.removeEventListener('campusloop-stale-data', reloadStaleData)
+  }, [])
+
+  useEffect(() => {
+    const restoreView = () => setActiveView(viewFromLocation())
+    window.addEventListener('hashchange', restoreView)
+    return () => window.removeEventListener('hashchange', restoreView)
+  }, [])
 
   useEffect(() => {
     async function loadApplication() {
       try {
-        let token = sessionStorage.getItem('campusloop-token')
+        const token = sessionStorage.getItem('campusloop-token')
         if (!token) return
         const auth = await apiFetch('/auth/me')
-        setProfile(auth.user)
-        const [listingData, eventData, offerData, clubData, announcementData, lostFoundData, maintenanceData] = await Promise.all([
+        const [listingData, eventData, offerData, clubData, announcementData, lostFoundData, maintenanceData, requestData] = await Promise.all([
           apiFetch('/listings'),
           apiFetch('/events'),
           apiFetch('/offers/my'),
@@ -114,7 +250,9 @@ function App() {
           apiFetch('/announcements'),
           apiFetch('/lost-found'),
           apiFetch('/maintenance'),
+          apiFetch('/requests/my'),
         ])
+        setProfile(auth.user)
         setListings(listingData.listings)
         setEvents(eventData.events)
         setRegistered(eventData.events.filter(event => event.registered).map(event => event.id))
@@ -123,14 +261,57 @@ function App() {
         setAnnouncements(announcementData.announcements)
         setLostFoundItems(lostFoundData.items)
         setMaintenanceRequests(maintenanceData.requests)
+        setResourceRequests(requestData.requests)
+        if (auth.user.role === 'admin') {
+          const [dashboardData, userData] = await Promise.all([apiFetch('/admin/dashboard'), apiFetch('/admin/users')])
+          setAdminStats(dashboardData.stats)
+          setAdminUsers(userData.users)
+        }
       } catch (error) {
-        setLoadError(error.message)
+        if (sessionStorage.getItem('campusloop-token')) setLoadError(error.message)
       } finally {
         setLoading(false)
       }
     }
     loadApplication()
-  }, [])
+  }, [loadAttempt])
+
+  useEffect(() => {
+    if (!profile) return undefined
+    let syncing = false
+    const syncSharedData = async () => {
+      if (syncing || !sessionStorage.getItem('campusloop-token')) return
+      syncing = true
+      try {
+        const [listingData, lostFoundData, requestData, offerData] = await Promise.all([
+          apiFetch('/listings'),
+          apiFetch('/lost-found'),
+          apiFetch('/requests/my'),
+          apiFetch('/offers/my'),
+        ])
+        setListings(listingData.listings)
+        setLostFoundItems(lostFoundData.items)
+        setResourceRequests(requestData.requests)
+        setOffers(offerData.offers)
+      } catch {
+        // apiFetch reports connection failures through the shared connection banner.
+      } finally {
+        syncing = false
+      }
+    }
+    const onStorage = event => {
+      if (event.key === 'campusloop-data-updated') syncSharedData()
+    }
+    const onFocus = () => syncSharedData()
+    const interval = window.setInterval(syncSharedData, 8000)
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [profile])
 
   useEffect(() => {
     const lenis = new Lenis({ duration: 1.05, smoothWheel: true })
@@ -141,13 +322,15 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!profile) return
     gsap.fromTo('.app-shell', { opacity: 0 }, { opacity: 1, duration: 0.65, ease: 'power2.out' })
     gsap.fromTo('.sidebar, .topbar, .hero-panel', { y: 12, opacity: 0 }, { y: 0, opacity: 1, duration: 0.8, stagger: 0.08, ease: 'power3.out' })
-  }, [])
+  }, [profile])
 
   useEffect(() => {
+    if (!profile) return
     gsap.fromTo('.page-wrap > *', { y: 16, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55, stagger: 0.05, ease: 'power3.out' })
-  }, [activeView])
+  }, [activeView, profile])
 
   useEffect(() => {
     if (!toast) return
@@ -165,7 +348,21 @@ function App() {
   }, [activeView, profile])
 
   const notify = (message, icon = Check) => setToast({ message, icon })
-  const navigate = (view) => { setActiveView(view); setSidebarOpen(false); setNavigationOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }
+  const navigate = (view) => {
+    if (!validViews.has(view)) return
+    if (viewFromLocation() !== view) window.history.pushState(null, '', `#${view}`)
+    setActiveView(view)
+    setSidebarOpen(false)
+    setNavigationOpen(false)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+  const announceSharedDataChange = () => {
+    try {
+      localStorage.setItem('campusloop-data-updated', `${Date.now()}-${Math.random()}`)
+    } catch (error) {
+      notify('This browser could not notify other tabs; they will refresh campus updates shortly.', CircleHelp)
+    }
+  }
   const toggleSave = async (id) => {
     try {
       const result = await apiFetch(`/listings/${id}/save`, { method: 'PATCH' })
@@ -173,25 +370,54 @@ function App() {
     } catch (error) { notify(error.message, CircleHelp) }
   }
   const toggleRegistration = async (id) => {
+    if (registrationInProgress.current.has(id)) return
+    registrationInProgress.current.add(id)
     const joined = registered.includes(id)
     try {
       const result = await apiFetch(`/events/${id}/registration`, { method: 'POST' })
       setRegistered(items => result.registered ? [...items, id] : items.filter(item => item !== id))
-      setEvents(items => items.map(event => event.id === id ? { ...event, registered: result.registered } : event))
-    } catch (error) { notify(error.message, CircleHelp); return }
-    notify(joined ? 'Registration cancelled' : 'You’re on the guest list', joined ? CalendarDays : Ticket)
+      setEvents(items => items.map(event => event.id === id ? { ...event, registered: result.registered, registrationCount: result.registrationCount, spots: result.spots } : event))
+      notify(joined ? 'Registration cancelled' : 'You’re on the guest list', joined ? CalendarDays : Ticket)
+    } catch (error) { notify(error.message, CircleHelp) }
+    finally { registrationInProgress.current.delete(id) }
   }
   const addListing = async (listing) => {
     try {
       const result = await apiFetch('/listings', { method: 'POST', body: JSON.stringify(listing) })
       setListings(items => [result.listing, ...items])
+      announceSharedDataChange()
       setShowCreate(false)
-      notify('Your resource request is live', PackageOpen)
+      notify(listing.postType === 'resource' ? 'Your resource listing is live' : 'Your resource request is live', PackageOpen)
     } catch (error) { notify(error.message, CircleHelp) }
+  }
+  const deleteListing = async (id) => {
+    const listing = listings.find(item => item.id === id)
+    if (!listing || !window.confirm(listing.postType === 'resource'
+      ? `Delete "${listing.title}"? You must first resolve pending requests; completed exchange history will be preserved.`
+      : `Delete "${listing.title}"? Related offers will also be removed.`)) return
+    try {
+      await apiFetch(`/listings/${id}`, { method: 'DELETE' })
+      setListings(items => items.filter(item => item.id !== id))
+      announceSharedDataChange()
+      setOffers(items => items.filter(offer => offer.listingId !== id))
+      await refreshResourceRequests()
+      notify('Resource listing deleted', PackageOpen)
+    } catch (error) { notify(error.message, CircleHelp) }
+  }
+  const updateListing = async (id, draft) => {
+    try {
+      const result = await apiFetch(`/listings/${id}`, { method: 'PUT', body: JSON.stringify(draft) })
+      setListings(items => items.map(item => item.id === id ? result.listing : item))
+      announceSharedDataChange()
+      setListingToEdit(null)
+      notify('Resource listing updated', PackageOpen)
+      return true
+    } catch (error) { notify(error.message, CircleHelp); return false }
   }
   const sendOffer = async (id, message) => {
     try {
       await apiFetch(`/listings/${id}/offers`, { method: 'POST', body: JSON.stringify({ message }) })
+      announceSharedDataChange()
       setSelectedListing(null)
       notify('Your message was sent to the student who posted the request', MessageCircle)
     } catch (error) { notify(error.message, CircleHelp) }
@@ -200,8 +426,69 @@ function App() {
     try {
       await apiFetch(`/listings/${id}/close`, { method: 'PATCH' })
       setListings(items => items.map(item => item.id === id ? { ...item, status: 'Fulfilled' } : item))
+      announceSharedDataChange()
       notify('Request closed — marked as received', Check)
     } catch (error) { notify(error.message, CircleHelp) }
+  }
+  const refreshResourceRequests = async () => {
+    const result = await apiFetch('/requests/my')
+    setResourceRequests(result.requests)
+  }
+  const requestResource = async (id, message) => {
+    try {
+      await apiFetch(`/listings/${id}/requests`, { method: 'POST', body: JSON.stringify({ message }) })
+      await refreshResourceRequests()
+      announceSharedDataChange()
+      setSelectedResource(null)
+      notify('Request sent to the resource owner', PackageOpen)
+      return true
+    } catch (error) { notify(error.message, CircleHelp); return false }
+  }
+  const updateResourceRequest = async (id, action) => {
+    try {
+      const result = await apiFetch(`/requests/${id}/${action}`, { method: 'PUT' })
+      setResourceRequests(items => items.map(item => item.id === id ? { ...item, ...result.request } : item))
+      if (result.listing) setListings(items => items.map(item => item.id === result.listing.id ? { ...item, ...result.listing } : item))
+      announceSharedDataChange()
+      notify(action === 'approve' ? 'Resource request approved' : action === 'reject' ? 'Resource request declined' : 'Resource marked as returned', PackageOpen)
+    } catch (error) { notify(error.message, CircleHelp) }
+  }
+  const submitReview = async (id, rating, comment) => {
+    try {
+      await apiFetch('/reviews', { method: 'POST', body: JSON.stringify({ requestId: id, rating, comment }) })
+      await refreshResourceRequests()
+      notify('Thanks for reviewing this exchange', Star)
+    } catch (error) { notify(error.message, CircleHelp) }
+  }
+  const refreshApplication = () => {
+    setLoadError('')
+    setLoading(true)
+    setLoadAttempt(attempt => attempt + 1)
+  }
+  const setUserSuspension = async (userId, suspended) => {
+    try {
+      const result = await apiFetch(`/admin/users/${userId}/status`, { method: 'PATCH', body: JSON.stringify({ suspended }) })
+      setAdminUsers(users => users.map(user => user.id === userId ? result.user : user))
+      const stats = await apiFetch('/admin/dashboard')
+      setAdminStats(stats.stats)
+      notify(suspended ? 'Student account suspended' : 'Student account restored', ShieldCheck)
+    } catch (error) { notify(error.message, CircleHelp) }
+  }
+  const assignMaintenance = async (id, userId) => {
+    try {
+      const result = await apiFetch(`/maintenance/${id}/assign`, { method: 'PUT', body: JSON.stringify({ userId }) })
+      setMaintenanceRequests(items => items.map(item => item.id === id ? result.request : item))
+      notify(userId ? 'Maintenance request assigned' : 'Maintenance assignment cleared', Settings)
+    } catch (error) { notify(error.message, CircleHelp) }
+  }
+  const updateLostFound = async (id, draft) => {
+    try {
+      const result = await apiFetch(`/lost-found/${id}`, { method: 'PUT', body: JSON.stringify(draft) })
+      setLostFoundItems(items => items.map(item => item.id === id ? { ...item, ...result.item } : item))
+      announceSharedDataChange()
+      notify('Lost and found report updated', Compass)
+      return true
+    } catch (error) { notify(error.message, CircleHelp); return false }
   }
   const updateProfile = async (draft) => {
     try {
@@ -232,7 +519,7 @@ function App() {
   }
   const createEvent = async (eventDraft) => {
     try {
-      const result = await apiFetch('/events', { method: 'POST', body: JSON.stringify(eventDraft) })
+      const result = await apiFetch('/events', { method: 'POST', body: JSON.stringify({ ...eventDraft, capacity: eventDraft.capacity ? Number(eventDraft.capacity) : 0 }) })
       setEvents(items => [...items, result.event])
       notify('Campus event posted', CalendarDays)
       return true
@@ -248,8 +535,8 @@ function App() {
   }
 
   if (loading) return <div className="app-loading"><div className="brand-mark"><Leaf size={17} /></div><strong>Opening CampusLoop</strong><span>Connecting to your campus space...</span></div>
-  if (loadError) return <div className="app-loading"><div className="brand-mark"><CircleHelp size={17} /></div><strong>CampusLoop is offline</strong><span>{loadError}</span><button className="button button-dark" onClick={() => window.location.reload()}>Try again</button></div>
-  if (!profile) return <LoginScreen />
+  if (loadError) return <div className="app-loading"><div className="brand-mark"><CircleHelp size={17} /></div><strong>CampusLoop could not connect</strong><span>{loadError}</span><small>Check that the API is running, MongoDB Atlas is reachable, and your network is online.</small><button className="button button-dark" onClick={refreshApplication}>Retry connection</button></div>
+  if (!profile) return <LoginScreen notice={authNotice} />
 
   return (
     <div className={`app-shell ${activeView === 'overview' ? 'overview-mode' : ''} ${activeView === 'exchange' ? 'exchange-mode' : ''} ${activeView === 'events' ? 'events-mode' : ''} ${activeView === 'profile' ? 'profile-mode' : ''}`}>
@@ -260,14 +547,15 @@ function App() {
         <div className="brand"><div className="brand-mark"><Leaf size={17} strokeWidth={2.5} /></div><span>campus<span>loop</span></span></div>
         <div className="campus-switcher"><div className="campus-avatar">NITW</div><div><strong>NITW</strong><span>Student space</span></div><ChevronRight size={15} /></div>
         <p className="nav-label">Workspace</p>
-        <nav>{navItems.map(({ id, label, icon: Icon, count }) => <button key={id} className={`nav-item ${activeView === id ? 'active' : ''}`} onClick={() => navigate(id)}><Icon size={18} /><span>{label}</span>{count && <em>{count}</em>}</button>)}</nav>
+        <nav>{navItems.filter(item => !item.adminOnly || profile.role === 'admin').map(({ id, label, icon: Icon, count }) => <button key={id} className={`nav-item ${activeView === id ? 'active' : ''}`} onClick={() => navigate(id)}><Icon size={18} /><span>{label}</span>{count && <em>{count}</em>}</button>)}</nav>
         <div className="sidebar-spacer" />
         {activeView !== 'exchange' && <div className="sidebar-note"><Sparkles size={16} /><strong>Make campus yours.</strong><span>Small exchanges make a bigger place feel close.</span></div>}
         <button className="nav-item muted" onClick={() => navigate('profile')}><Settings size={18} /><span>Settings</span></button>
-        <div className="sidebar-profile"><div className="avatar avatar-coral">{profile.name.split(' ').map(part => part[0]).join('')}</div><div><strong>{profile.name}</strong><span>Student account</span></div><button onClick={() => setShowAuth(true)} aria-label="Open account menu"><LogOut size={16} /></button></div>
+        <div className="sidebar-profile"><div className="avatar avatar-coral">{profile.name.split(' ').map(part => part[0]).join('')}</div><div><strong>{profile.name}</strong><span>{profile.role === 'admin' ? 'Administrator account' : 'Student account'}</span></div><button onClick={() => setShowAuth(true)} aria-label="Open account menu"><LogOut size={16} /></button></div>
       </aside>
 
       <main className="main-content">
+        {apiUnavailable && <div className="connection-banner" role="status"><CircleHelp size={17} /><span>CampusLoop is having trouble reaching the server. Your changes may not have been saved.</span><button type="button" onClick={refreshApplication}>Reconnect</button></div>}
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setSidebarOpen(value => !value)} aria-label="Toggle navigation"><Menu size={20} /></button>
           <div className="breadcrumb"><span>NITW</span><ChevronRight size={14} /><strong>{navItems.find(item => item.id === activeView)?.label || 'Overview'}</strong></div>
@@ -277,45 +565,77 @@ function App() {
 
         <div className="page-wrap">
           {activeView === 'overview' && <Overview navigate={navigate} />}
-          {activeView === 'exchange' && <Exchange listings={listings} onSave={toggleSave} onCreate={() => setShowCreate(true)} onOffer={setSelectedListing} currentUserId={profile.id} />}
-          {activeView === 'announcements' && <AnnouncementsPage announcements={announcements} isAdmin={profile.role === 'admin'} onCreate={async (draft) => {
-            const result = await apiFetch('/announcements', { method: 'POST', body: JSON.stringify(draft) })
-            setAnnouncements(items => [result.announcement, ...items])
-            notify('Announcement posted', Bell)
-          }} onDelete={async (id) => {
-            await apiFetch(`/announcements/${id}`, { method: 'DELETE' })
-            setAnnouncements(items => items.filter(item => item.id !== id))
-            notify('Announcement removed', Bell)
+          {activeView === 'exchange' && <Exchange listings={listings} isAdmin={profile.role === 'admin'} onSave={toggleSave} onCreate={() => setShowCreate(true)} onOffer={setSelectedListing} onDelete={deleteListing} onEdit={setListingToEdit} onRequest={setSelectedResource} currentUserId={profile.id} />}
+          {activeView === 'announcements' && <AnnouncementsPage announcements={announcements} isAdmin={profile.role === 'admin'} onCreate={async draft => {
+            try {
+              const result = await apiFetch('/announcements', { method: 'POST', body: JSON.stringify(draft) })
+              setAnnouncements(items => [result.announcement, ...items])
+              notify('Announcement posted', Bell)
+              return true
+            } catch (error) { notify(error.message, CircleHelp); return false }
+          }} onUpdate={async (id, draft) => {
+            try {
+              const result = await apiFetch(`/announcements/${id}`, { method: 'PUT', body: JSON.stringify(draft) })
+              setAnnouncements(items => items.map(item => item.id === id ? result.announcement : item))
+              notify('Announcement updated', Bell)
+              return true
+            } catch (error) { notify(error.message, CircleHelp); return false }
+          }} onDelete={async id => {
+            try {
+              await apiFetch(`/announcements/${id}`, { method: 'DELETE' })
+              setAnnouncements(items => items.filter(item => item.id !== id))
+              notify('Announcement removed', Bell)
+            } catch (error) { notify(error.message, CircleHelp) }
           }} />}
-          {activeView === 'events' && <Events events={events} registered={registered} clubs={clubs} onRegister={toggleRegistration} onOpen={setSelectedEvent} onCreate={() => setShowEventCreate(true)} onRemove={removeEvent} />}
-          {activeView === 'lost-found' && <LostFoundPage items={lostFoundItems} currentUserId={profile.id} isAdmin={profile.role === 'admin'} onCreate={async (draft) => {
-            const result = await apiFetch('/lost-found', { method: 'POST', body: JSON.stringify(draft) })
-            setLostFoundItems(items => [result.item, ...items])
-            notify('Lost or found item reported', Compass)
+          {activeView === 'events' && <Events events={events} registered={registered} clubs={clubs} isAdmin={profile.role === 'admin'} onRegister={toggleRegistration} onOpen={event => setSelectedEvent(events.find(item => item.id === event.id) || event)} onCreate={() => setShowEventCreate(true)} onRemove={removeEvent} />}
+          {activeView === 'lost-found' && <LostFoundPage items={lostFoundItems} currentUserId={profile.id} isAdmin={profile.role === 'admin'} onUpdate={updateLostFound} onCreate={async (draft) => {
+            try {
+              const result = await apiFetch('/lost-found', { method: 'POST', body: JSON.stringify(draft) })
+              setLostFoundItems(items => [result.item, ...items])
+              announceSharedDataChange()
+              notify('Lost or found item reported', Compass)
+              return true
+            } catch (error) { notify(error.message, CircleHelp); return false }
           }} onResolve={async (id) => {
-            const result = await apiFetch(`/lost-found/${id}/resolve`, { method: 'PUT' })
-            setLostFoundItems(items => items.map(item => item.id === id ? { ...item, status: result.item.status } : item))
-            notify('Report marked as resolved', Check)
+            try {
+              const result = await apiFetch(`/lost-found/${id}/resolve`, { method: 'PUT' })
+              setLostFoundItems(items => items.map(item => item.id === id ? { ...item, status: result.item.status } : item))
+              announceSharedDataChange()
+              notify('Report marked as resolved', Check)
+            } catch (error) { notify(error.message, CircleHelp) }
           }} onDelete={async (id) => {
-            await apiFetch(`/lost-found/${id}`, { method: 'DELETE' })
-            setLostFoundItems(items => items.filter(item => item.id !== id))
-            notify('Report removed', Compass)
+            try {
+              await apiFetch(`/lost-found/${id}`, { method: 'DELETE' })
+              setLostFoundItems(items => items.filter(item => item.id !== id))
+              announceSharedDataChange()
+              notify('Report removed', Compass)
+            } catch (error) { notify(error.message, CircleHelp) }
           }} />}
-          {activeView === 'maintenance' && <MaintenancePage requests={maintenanceRequests} currentUserId={profile.id} isAdmin={profile.role === 'admin'} onCreate={async (draft) => {
-            const result = await apiFetch('/maintenance', { method: 'POST', body: JSON.stringify(draft) })
-            setMaintenanceRequests(items => [result.request, ...items])
-            notify('Maintenance request submitted', Settings)
+          {activeView === 'maintenance' && <MaintenancePage requests={maintenanceRequests} students={adminUsers.filter(user => user.role === 'student' && !user.suspendedAt)} currentUserId={profile.id} isAdmin={profile.role === 'admin'} onAssign={assignMaintenance} onCreate={async (draft) => {
+            try {
+              const result = await apiFetch('/maintenance', { method: 'POST', body: JSON.stringify(draft) })
+              setMaintenanceRequests(items => [result.request, ...items])
+              announceSharedDataChange()
+              notify('Maintenance request submitted', Settings)
+              return true
+            } catch (error) { notify(error.message, CircleHelp); return false }
           }} onUpdateStatus={async (id, status) => {
-            const result = await apiFetch(`/maintenance/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) })
-            setMaintenanceRequests(items => items.map(item => item.id === id ? { ...item, status: result.request.status } : item))
-            notify('Status updated', Check)
+            try {
+              const result = await apiFetch(`/maintenance/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) })
+              setMaintenanceRequests(items => items.map(item => item.id === id ? { ...item, ...result.request } : item))
+              notify('Status updated', Check)
+            } catch (error) { notify(error.message, CircleHelp) }
           }} onConfirmResolved={async (id) => {
-            const result = await apiFetch(`/maintenance/${id}/confirm`, { method: 'PUT' })
-            setMaintenanceRequests(items => items.map(item => item.id === id ? { ...item, confirmedByUserAt: result.request.confirmedByUserAt } : item))
-            notify('Resolution confirmed', Check)
+            try {
+              const result = await apiFetch(`/maintenance/${id}/confirm`, { method: 'PUT' })
+              setMaintenanceRequests(items => items.map(item => item.id === id ? { ...item, confirmedByUserAt: result.request.confirmedByUserAt } : item))
+              notify('Resolution confirmed', Check)
+            } catch (error) { notify(error.message, CircleHelp) }
           }} />}
           {activeView === 'profile' && <Profile profile={profile} onSave={updateProfile} clubs={clubs} onRequestClub={requestClubMembership} onApproveClubRequest={approveClubMembership} listings={listings} registered={registered} offers={offers} navigate={navigate} />}
-          {activeView === 'profile' && <RequestHistory listings={listings.filter(item => item.ownerId === profile.id)} offers={offers} onCloseRequest={closeListing} />}
+          {activeView === 'profile' && <RequestHistory listings={listings.filter(item => item.ownerId === profile.id && item.postType === 'wanted')} offers={offers} onCloseRequest={closeListing} onDeleteRequest={deleteListing} />}
+          {activeView === 'profile' && <ResourceRequestHistory requests={resourceRequests} currentUserId={profile.id} onAction={updateResourceRequest} onReview={submitReview} />}
+          {activeView === 'admin' && profile.role === 'admin' && <AdminDashboard stats={adminStats} users={adminUsers} onSuspend={setUserSuspension} onRefresh={refreshApplication} />}
         </div>
       </main>
 
@@ -324,19 +644,22 @@ function App() {
         isOpen={navigationOpen}
         onToggle={() => setNavigationOpen(open => !open)}
         onNavigate={navigate}
+        isAdmin={profile.role === 'admin'}
         onSignOut={() => { sessionStorage.removeItem('campusloop-token'); window.location.reload() }}
       />
       {showCreate && <CreateListing onClose={() => setShowCreate(false)} onSubmit={addListing} />}
-      {showEventCreate && <CreateEventModal clubs={clubs} onClose={() => setShowEventCreate(false)} onSubmit={createEvent} />}
+      {listingToEdit && <CreateListing listing={listingToEdit} onClose={() => setListingToEdit(null)} onSubmit={draft => updateListing(listingToEdit.id, draft)} />}
+      {showEventCreate && <CreateEventModal clubs={clubs} isAdmin={profile.role === 'admin'} onClose={() => setShowEventCreate(false)} onSubmit={createEvent} />}
       {selectedListing && <OfferModal listing={selectedListing} onClose={() => setSelectedListing(null)} onSubmit={message => sendOffer(selectedListing.id, message)} />}
+      {selectedResource && <ResourceRequestModal listing={selectedResource} onClose={() => setSelectedResource(null)} onSubmit={message => requestResource(selectedResource.id, message)} />}
       {showAuth && <AuthModal profile={profile} onClose={() => setShowAuth(false)} onSignedOut={() => { sessionStorage.removeItem('campusloop-token'); window.location.reload() }} />}
-      {selectedEvent && <EventModal event={selectedEvent} registered={registered.includes(selectedEvent.id)} canViewGuestList={clubs.some(club => club.id === selectedEvent.clubId && club.isMember)} onClose={() => setSelectedEvent(null)} onRegister={() => { toggleRegistration(selectedEvent.id); setSelectedEvent(null) }} />}
+      {selectedEvent && <EventModal event={events.find(item => item.id === selectedEvent.id) || selectedEvent} registered={registered.includes(selectedEvent.id)} canViewGuestList={profile.role === 'admin' || clubs.some(club => club.id === selectedEvent.clubId && club.isMember)} onClose={() => setSelectedEvent(null)} onRegister={() => { toggleRegistration(selectedEvent.id); setSelectedEvent(null) }} />}
       {toast && <div className="toast"><toast.icon size={17} /><span>{toast.message}</span></div>}
     </div>
   )
 }
 
-function PageNavigation({ activeView, isOpen, onToggle, onNavigate, onSignOut }) {
+function PageNavigation({ activeView, isOpen, onToggle, onNavigate, onSignOut, isAdmin }) {
   useEffect(() => {
     if (!isOpen) return undefined
     const closeOnEscape = event => {
@@ -359,7 +682,7 @@ function PageNavigation({ activeView, isOpen, onToggle, onNavigate, onSignOut })
         {isOpen ? <X size={22} /> : <Menu size={22} />}
       </button>
       <nav id="page-navigation-menu" className={`page-navigation-menu ${isOpen ? 'is-open' : ''}`} aria-label="CampusLoop pages" aria-hidden={!isOpen}>
-        {navItems.map(({ id, label, icon: Icon }) => (
+        {navItems.filter(item => !item.adminOnly || isAdmin).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -470,7 +793,7 @@ function MainframeVideo() {
   return <video ref={videoRef} className="mainframe-video" muted playsInline preload="auto" src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260530_042513_df96a13b-6155-4f6e-8b93-c9dee66fba08.mp4" />
 }
 
-function LoginScreen() {
+function LoginScreen({ notice = '' }) {
   const [mode, setMode] = useState('login')
   const [form, setForm] = useState({ name: '', branch: '', year: '', hostel: '', phone: '', email: '', password: '', adminSetupKey: '' })
   const [error, setError] = useState('')
@@ -498,7 +821,7 @@ function LoginScreen() {
       <aside className="mainframe-auth" id="auth">
         <p className="mainframe-auth-kicker">CAMPUSLOOP / {mode === 'login' ? 'STUDENT ACCESS' : 'NEW MEMBER'}</p>
         <h2>{mode === 'login' ? 'Welcome back.' : 'Join the loop.'}</h2>
-        <form onSubmit={submit}>{mode === 'register' && <><label>Full name<input value={form.name} onChange={event => update('name', event.target.value)} placeholder="Maya Patel" required /></label><label>Branch<input value={form.branch} onChange={event => update('branch', event.target.value)} placeholder="Computer Science" required /></label><label>Year<input value={form.year} onChange={event => update('year', event.target.value)} placeholder="e.g. 3" required /></label><label>Hostel (optional)<input value={form.hostel} onChange={event => update('hostel', event.target.value)} placeholder="e.g. Godavari" /></label><label>Phone number<input type="tel" autoComplete="tel" value={form.phone} onChange={event => update('phone', event.target.value)} placeholder="+91 98765 43210" minLength={7} maxLength={25} pattern="\+?[0-9().\-\s]{7,25}" required /></label><label>Administrator setup key (if configured)<input type="password" autoComplete="off" value={form.adminSetupKey} onChange={event => update('adminSetupKey', event.target.value)} /></label></>}<label>Campus email<input type="email" value={form.email} onChange={event => update('email', event.target.value)} placeholder="you@student.nitw.ac.in" required /></label>{mode === 'register' && <small className="registration-email-hint">Use your @student.nitw.ac.in email address.</small>}<label>Password<input type="password" value={form.password} onChange={event => update('password', event.target.value)} minLength={6} required /></label>{error && <p className="mainframe-form-error">{error}</p>}<button className="mainframe-submit" disabled={submitting}>{submitting ? 'Connecting...' : mode === 'login' ? 'Enter CampusLoop' : 'Create account'}<ArrowUpRight size={15} /></button></form>
+        <form onSubmit={submit}>{mode === 'register' && <><label>Full name<input value={form.name} onChange={event => update('name', event.target.value)} placeholder="Maya Patel" required /></label><label>Branch<input value={form.branch} onChange={event => update('branch', event.target.value)} placeholder="Computer Science" required /></label><label>Year<input value={form.year} onChange={event => update('year', event.target.value)} placeholder="e.g. 3" required /></label><label>Hostel (optional)<input value={form.hostel} onChange={event => update('hostel', event.target.value)} placeholder="e.g. Godavari" /></label><label>Phone number<input type="tel" autoComplete="tel" value={form.phone} onChange={event => update('phone', event.target.value)} placeholder="+91 98765 43210" minLength={7} maxLength={25} pattern="\+?[0-9().\-\s]{7,25}" required /></label><label>Administrator setup key (if configured)<input type="password" autoComplete="off" value={form.adminSetupKey} onChange={event => update('adminSetupKey', event.target.value)} /></label></>}<label>Campus email<input type="email" value={form.email} onChange={event => update('email', event.target.value)} placeholder="you@student.nitw.ac.in" required /></label>{mode === 'register' && <small className="registration-email-hint">Use your @student.nitw.ac.in email address.</small>}<label>Password<input type="password" value={form.password} onChange={event => update('password', event.target.value)} minLength={6} required /></label>{notice && <p className="mainframe-form-error" role="alert">{notice}</p>}{error && <p className="mainframe-form-error" role="alert">{error}</p>}<button className="mainframe-submit" disabled={submitting}>{submitting ? 'Connecting...' : mode === 'login' ? 'Enter CampusLoop' : 'Create account'}<ArrowUpRight size={15} /></button></form>
         <button className="mainframe-switch" onClick={() => { const nextMode = mode === 'login' ? 'register' : 'login'; setMode(nextMode); setError(''); if (nextMode === 'register') update('email', '') }}>{mode === 'login' ? 'Create a student account' : 'Back to sign in'}</button>
       </aside>
     </section>
@@ -509,10 +832,12 @@ function PageIntro({ eyebrow, title, body, action, onAction }) {
   return <div className="page-intro"><div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1>{body && <p className="intro-copy">{body}</p>}</div>{action && <button className="button button-dark" onClick={onAction}>{action}<Plus size={16} /></button>}</div>
 }
 
-function AnnouncementsPage({ announcements, isAdmin, onCreate, onDelete }) {
+function AnnouncementsPage({ announcements, isAdmin, onCreate, onUpdate, onDelete }) {
   const [form, setForm] = useState({ title: '', category: 'General', content: '', pinned: false })
   const [filter, setFilter] = useState('All')
   const [query, setQuery] = useState('')
+  const [editing, setEditing] = useState(null)
+  const [posting, setPosting] = useState(false)
   const categories = ['All', ...new Set((announcements || []).map(item => item.category || 'General'))]
   const visible = (announcements || []).filter(item =>
     (filter === 'All' || item.category === filter)
@@ -531,53 +856,91 @@ function AnnouncementsPage({ announcements, isAdmin, onCreate, onDelete }) {
       <div className="panel-block">
         <h3 className="panel-title">Latest notices</h3>
         <div className="stack-list">
-          {visible.length === 0 ? <div className="empty-state"><strong>No announcements yet</strong><span>Post the first campus notice.</span></div> : visible.map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.category || 'General'}</span>{item.pinned && <span className="chip accent">Pinned</span>}</div><h4>{item.title}</h4><p>{item.content}</p><div className="detail-footer"><small>{item.author || 'Campus admin'}</small><small>{new Date(item.createdAt).toLocaleDateString()}</small>{isAdmin && onDelete && <button type="button" className="text-button" onClick={() => onDelete(item.id)}>Delete</button>}</div></article>)}
+          {visible.length === 0 ? <div className="empty-state"><strong>No announcements match</strong><span>Try another search, or post the first campus notice.</span></div> : visible.map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.category || 'General'}</span>{item.pinned && <span className="chip accent">Pinned</span>}</div>{editing?.id === item.id ? <form className="announcement-edit-form" onSubmit={async event => { event.preventDefault(); if (posting) return; setPosting(true); try { if (await onUpdate(item.id, editing.draft)) setEditing(null) } finally { setPosting(false) } }}><label>Title<input maxLength={120} required value={editing.draft.title} onChange={event => setEditing(current => ({ ...current, draft: { ...current.draft, title: event.target.value } }))} /></label><label>Category<select value={editing.draft.category} onChange={event => setEditing(current => ({ ...current, draft: { ...current.draft, category: event.target.value } }))}><option>General</option><option>Academic</option><option>Administrative</option><option>Club</option><option>Health</option></select></label><label>Details<textarea rows="4" maxLength={3000} required value={editing.draft.content} onChange={event => setEditing(current => ({ ...current, draft: { ...current.draft, content: event.target.value } }))} /></label><label className="checkbox-row"><input type="checkbox" checked={editing.draft.pinned} onChange={event => setEditing(current => ({ ...current, draft: { ...current.draft, pinned: event.target.checked } }))} /> Pin this announcement</label><div className="modal-actions"><button type="button" className="button button-light" disabled={posting} onClick={() => setEditing(null)}>Cancel</button><button className="button button-dark" disabled={posting}>{posting ? 'Saving…' : 'Save changes'}</button></div></form> : <><h4>{item.title}</h4><p>{item.content}</p></>}<div className="detail-footer"><small>{item.author || 'Campus admin'}</small><small>{formatPostedDate(item.createdAt)}</small>{isAdmin && onDelete && <>{editing?.id !== item.id && <button type="button" className="text-button" onClick={() => setEditing({ id: item.id, draft: { title: item.title, category: item.category || 'General', content: item.content, pinned: Boolean(item.pinned) } })}>Edit</button>}<button type="button" className="text-button" onClick={() => onDelete(item.id)}>Delete</button></>}</div></article>)}
         </div>
       </div>
-      {isAdmin && <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); await onCreate(form); setForm({ title: '', category: 'General', content: '', pinned: false }) }}>
+      {isAdmin && <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); if (posting) return; setPosting(true); try { if (await onCreate(form)) setForm({ title: '', category: 'General', content: '', pinned: false }) } finally { setPosting(false) } }}>
         <h3 className="panel-title">Post a notice</h3>
-        <label>Title<input value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Exam schedule update" required /></label>
+        <label>Title<input maxLength={120} value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Exam schedule update" required /></label>
         <label>Category<select value={form.category} onChange={event => setForm(current => ({ ...current, category: event.target.value }))}><option>General</option><option>Academic</option><option>Administrative</option><option>Club</option><option>Health</option></select></label>
-        <label>Details<textarea value={form.content} onChange={event => setForm(current => ({ ...current, content: event.target.value }))} rows="5" placeholder="Share the update or reminder here..." required /></label>
+        <label>Details<textarea maxLength={3000} value={form.content} onChange={event => setForm(current => ({ ...current, content: event.target.value }))} rows="5" placeholder="Share the update or reminder here..." required /></label>
         <label className="checkbox-row"><input type="checkbox" checked={form.pinned} onChange={event => setForm(current => ({ ...current, pinned: event.target.checked }))} /> Pin this announcement</label>
-        <button type="submit" className="button button-dark">Publish</button>
+        <button type="submit" className="button button-dark" disabled={posting}>{posting ? 'Publishing…' : 'Publish'}</button>
       </form>}
     </div>
   </div>
 }
 
-function LostFoundPage({ items, currentUserId, isAdmin, onCreate, onResolve, onDelete }) {
-  const [form, setForm] = useState({ title: '', type: 'lost', description: '', location: '', date: '', image: '' })
+function LostFoundPage({ items, currentUserId, isAdmin, onCreate, onUpdate, onResolve, onDelete }) {
+  const [form, setForm] = useState({ title: '', type: 'lost', category: 'Other', description: '', location: '', date: '', image: '' })
   const [filter, setFilter] = useState('all')
-  const visible = items.filter(item => filter === 'all' || item.type === filter)
+  const [query, setQuery] = useState('')
+  const [posting, setPosting] = useState(false)
+  const [imageError, setImageError] = useState('')
+  const [editingItem, setEditingItem] = useState(null)
+  const visible = items.filter(item =>
+    (filter === 'all' || item.type === filter)
+    && `${item.title} ${item.description} ${item.location}`.toLowerCase().includes(query.toLowerCase()),
+  )
 
   return <div className="module-shell">
     <PageIntro eyebrow="LOST & FOUND" title="Help campus items find home." body="Report a lost item or match a found one with its owner." />
-    <div className="module-toolbar"><div className="filter-pills"><button type="button" className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')}>All</button><button type="button" className={filter === 'lost' ? 'selected' : ''} onClick={() => setFilter('lost')}>Lost</button><button type="button" className={filter === 'found' ? 'selected' : ''} onClick={() => setFilter('found')}>Found</button></div></div>
+    <div className="module-toolbar"><div className="filter-pills"><button type="button" className={filter === 'all' ? 'selected' : ''} onClick={() => setFilter('all')}>All</button><button type="button" className={filter === 'lost' ? 'selected' : ''} onClick={() => setFilter('lost')}>Lost</button><button type="button" className={filter === 'found' ? 'selected' : ''} onClick={() => setFilter('found')}>Found</button></div><label className="search-field"><Search size={16} /><input aria-label="Search lost and found" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search items or locations" /></label></div>
     <div className="details-grid">
       <div className="panel-block">
         <h3 className="panel-title">Recent reports</h3>
         <div className="stack-list">
-          {visible.length === 0 ? <div className="empty-state"><strong>No reports yet</strong><span>Start with the first lost or found post.</span></div> : visible.map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.type}</span><span className={`chip ${item.status === 'resolved' ? 'muted' : 'accent'}`}>{item.status === 'resolved' ? 'Resolved' : 'Open'}</span></div><h4>{item.title}</h4>{item.image && <img src={item.image} alt={item.title} className="detail-image" />}<p>{item.description}</p><div className="meta-row"><span>{item.location}</span><span>{item.date || 'Date unspecified'}</span></div><div className="detail-footer"><span>{item.contactEmail ? <a href={`mailto:${item.contactEmail}`}>{item.contactName || item.contactEmail}</a> : item.contactName || 'Campus student'}{item.contactPhone && <> · <a href={`tel:${item.contactPhone}`}>{item.contactPhone}</a></>}</span>{(item.reporterId === currentUserId || isAdmin) && item.status !== 'resolved' && <button type="button" className="text-button" onClick={() => onResolve(item.id)}>Resolve</button>} {(item.reporterId === currentUserId || isAdmin) && <button type="button" className="text-button" onClick={() => onDelete(item.id)}>Delete</button>}</div></article>)}
+          {visible.length === 0 ? <div className="empty-state"><strong>No reports match</strong><span>Try another search, or submit a lost or found report.</span></div> : visible.map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.type}</span><span className="chip">{item.category || 'Other'}</span><span className={`chip ${item.status === 'resolved' ? 'muted' : 'accent'}`}>{item.status === 'resolved' ? 'Resolved' : 'Open'}</span></div><h4>{item.title}</h4>{item.image && <img src={item.image} alt={item.title} className="detail-image" onError={event => { event.currentTarget.hidden = true }} />}<p>{item.description}</p><div className="meta-row"><span>{item.location}</span><span>{item.date || 'Date unspecified'}</span></div><div className="detail-footer"><span>{item.contactEmail ? <a href={`mailto:${item.contactEmail}`}>{item.contactName || item.contactEmail}</a> : item.contactName || 'Campus student'}{item.contactPhone && <> · <a href={`tel:${item.contactPhone}`}>{item.contactPhone}</a></>}</span>{(item.reporterId === currentUserId || isAdmin) && <button type="button" className="text-button" onClick={() => setEditingItem(item)}>Edit</button>} {(item.reporterId === currentUserId || isAdmin) && item.status !== 'resolved' && <button type="button" className="text-button" onClick={() => onResolve(item.id)}>Resolve</button>} {(item.reporterId === currentUserId || isAdmin) && <button type="button" className="text-button" onClick={() => window.confirm(`Delete the report for “${item.title}”?`) && onDelete(item.id)}>Delete</button>}</div></article>)}
         </div>
       </div>
-      <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); await onCreate(form); setForm({ title: '', type: 'lost', description: '', location: '', date: '', image: '' }) }}>
+      <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); if (posting) return; setPosting(true); try { if (await onCreate(form)) { setForm({ title: '', type: 'lost', category: 'Other', description: '', location: '', date: '', image: '' }); setImageError('') } } finally { setPosting(false) } }}>
         <h3 className="panel-title">Report item</h3>
-        <label>Item name<input value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Blue water bottle" required /></label>
+        <label>Item name<input maxLength={120} value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Blue water bottle" required /></label>
         <label>Type<select value={form.type} onChange={event => setForm(current => ({ ...current, type: event.target.value }))}><option value="lost">Lost item</option><option value="found">Found item</option></select></label>
+        <label>Category<select value={form.category} onChange={event => setForm(current => ({ ...current, category: event.target.value }))}><option>Accessories</option><option>Electronics</option><option>Documents</option><option>Clothing</option><option>Other</option></select></label>
         <label>Location<input value={form.location} onChange={event => setForm(current => ({ ...current, location: event.target.value }))} placeholder="Library second floor" required /></label>
         <label>Date<input type="date" value={form.date} onChange={event => setForm(current => ({ ...current, date: event.target.value }))} /></label>
-        <label>Image URL<input value={form.image} onChange={event => setForm(current => ({ ...current, image: event.target.value }))} placeholder="https://..." /></label>
-        <label>Details<textarea value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))} rows="4" placeholder="Describe the item and any identifying details." required /></label>
-        <button type="submit" className="button button-dark">Submit report</button>
+        <div className="photo-form-field"><span>Item photo (optional)</span><ImageUploadControls image={form.image} onChange={image => setForm(current => ({ ...current, image }))} onError={setImageError} /><label>Or image URL<input type="url" maxLength={2048} value={form.image.startsWith('data:') ? '' : form.image} onChange={event => setForm(current => ({ ...current, image: event.target.value }))} placeholder="https://..." /></label>{imageError && <span className="image-form-error" role="alert">{imageError}</span>}</div>
+        <label>Details<textarea maxLength={1500} value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))} rows="4" placeholder="Describe the item and any identifying details." required /></label>
+        <button type="submit" className="button button-dark" disabled={posting}>{posting ? 'Submitting…' : 'Submit report'}</button>
       </form>
     </div>
+    {editingItem && <LostFoundEditModal item={editingItem} onClose={() => setEditingItem(null)} onSubmit={async draft => { if (await onUpdate(editingItem.id, draft)) setEditingItem(null) }} />}
   </div>
 }
 
-function MaintenancePage({ requests, currentUserId, isAdmin, onCreate, onUpdateStatus, onConfirmResolved }) {
+function LostFoundEditModal({ item, onClose, onSubmit }) {
+  const [draft, setDraft] = useState({ title: item.title, type: item.type, category: item.category || 'Other', description: item.description, location: item.location, date: item.date || '', image: item.image || '' })
+  const [saving, setSaving] = useState(false)
+  const [imageError, setImageError] = useState('')
+  const submit = async event => {
+    event.preventDefault()
+    if (saving) return
+    setSaving(true)
+    try {
+      await onSubmit(draft)
+    } finally {
+      setSaving(false)
+    }
+  }
+  return <div className="modal-backdrop"><form className="modal" onSubmit={submit}>
+    <button type="button" className="modal-close" aria-label="Close" disabled={saving} onClick={onClose}><X size={18} /></button>
+    <p className="eyebrow">LOST &amp; FOUND</p><h2>Edit report</h2>
+    <label>Item name<input required maxLength={120} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
+    <label>Type<select value={draft.type} onChange={event => setDraft({ ...draft, type: event.target.value })}><option value="lost">Lost item</option><option value="found">Found item</option></select></label>
+    <label>Category<select value={draft.category} onChange={event => setDraft({ ...draft, category: event.target.value })}><option>Accessories</option><option>Electronics</option><option>Documents</option><option>Clothing</option><option>Other</option></select></label>
+    <label>Location<input required maxLength={160} value={draft.location} onChange={event => setDraft({ ...draft, location: event.target.value })} /></label>
+    <label>Date<input type="date" max={new Date().toISOString().slice(0, 10)} value={draft.date} onChange={event => setDraft({ ...draft, date: event.target.value })} /></label>
+    <div className="photo-form-field"><span>Item photo (optional)</span><ImageUploadControls image={draft.image} onChange={image => setDraft(current => ({ ...current, image }))} onError={setImageError} /><label>Or image URL<input type="url" maxLength={2048} value={draft.image.startsWith('data:') ? '' : draft.image} onChange={event => setDraft(current => ({ ...current, image: event.target.value }))} placeholder="https://..." /></label>{imageError && <span className="image-form-error" role="alert">{imageError}</span>}</div>
+    <label>Details<textarea required maxLength={1500} rows={4} value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label>
+    <div className="modal-actions"><button type="button" className="button button-light" disabled={saving} onClick={onClose}>Cancel</button><button type="submit" className="button button-dark" disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</button></div>
+  </form></div>
+}
+
+function MaintenancePage({ requests, students = [], currentUserId, isAdmin, onAssign, onCreate, onUpdateStatus, onConfirmResolved }) {
   const [form, setForm] = useState({ title: '', category: 'Electrical', location: '', description: '', image: '' })
-  const statuses = ['Submitted', 'In Progress', 'Resolved']
+  const [posting, setPosting] = useState(false)
+  const [imageError, setImageError] = useState('')
 
   return <div className="module-shell">
     <PageIntro eyebrow="CAMPUS MAINTENANCE" title="Submit and track help requests." body="Report facilities issues and track them through submission to resolution." />
@@ -585,17 +948,17 @@ function MaintenancePage({ requests, currentUserId, isAdmin, onCreate, onUpdateS
       <div className="panel-block">
         <h3 className="panel-title">Open requests</h3>
         <div className="stack-list">
-          {(requests || []).length === 0 ? <div className="empty-state"><strong>No maintenance requests</strong><span>Report the next campus issue.</span></div> : (requests || []).map(item => <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.category}</span><span className={`chip ${item.status === 'Resolved' ? 'muted' : 'accent'}`}>{item.status}</span></div><h4>{item.title}</h4>{item.image && <img src={item.image} alt={item.title} className="detail-image" />}<p>{item.description}</p><div className="meta-row"><span>{item.location}</span><span>{new Date(item.createdAt).toLocaleDateString()}</span></div><div className="detail-footer"><small>{item.userName || 'Student'}{item.confirmedByUserAt ? ' · Resolution confirmed' : ''}</small>{isAdmin && <div className="status-actions">{statuses.filter(status => status !== item.status).map(status => <button key={status} type="button" className="text-button" onClick={() => onUpdateStatus(item.id, status)}>{status}</button>)}</div>}{item.userId === currentUserId && item.status === 'Resolved' && !item.confirmedByUserAt && <button type="button" className="text-button" onClick={() => onConfirmResolved(item.id)}>Confirm resolved</button>}</div></article>)}
+          {(requests || []).length === 0 ? <div className="empty-state"><strong>No maintenance requests</strong><span>Report the next campus issue.</span></div> : (requests || []).map(item => { const nextStatus = item.status === 'Submitted' ? 'In Progress' : item.status === 'In Progress' ? 'Resolved' : null; return <article key={item.id} className="detail-card"><div className="detail-top"><span className="chip">{item.category}</span><span className={`chip ${item.status === 'Resolved' ? 'muted' : 'accent'}`}>{item.status}</span></div><h4>{item.title}</h4>{item.image && <img src={item.image} alt={item.title} className="detail-image" onError={event => { event.currentTarget.hidden = true }} />}<p>{item.description}</p><div className="meta-row"><span>{item.location}</span><span>{formatPostedDate(item.createdAt)}</span></div><div className="detail-footer"><small>{item.userName || 'Student'}{item.assignedToName ? ` · Assigned to ${item.assignedToName}` : ''}{item.confirmedByUserAt ? ' · Resolution confirmed' : ''}</small>{isAdmin && <div className="status-actions"><select aria-label={`Assign ${item.title}`} value={item.assignedTo || ''} onChange={event => onAssign(item.id, event.target.value)}><option value="">Unassigned</option>{students.map(student => <option key={student.id} value={student.id}>{student.name}</option>)}</select>{nextStatus && <button type="button" className="text-button" onClick={() => onUpdateStatus(item.id, nextStatus)}>{nextStatus}</button>}</div>}{item.userId === currentUserId && item.status === 'Resolved' && !item.confirmedByUserAt && <button type="button" className="text-button" onClick={() => onConfirmResolved(item.id)}>Confirm resolved</button>}</div></article>})}
         </div>
       </div>
-      <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); await onCreate(form); setForm({ title: '', category: 'Electrical', location: '', description: '', image: '' }) }}>
+      <form className="panel-block form-panel" onSubmit={async event => { event.preventDefault(); if (posting) return; setPosting(true); try { if (await onCreate(form)) { setForm({ title: '', category: 'Electrical', location: '', description: '', image: '' }); setImageError('') } } finally { setPosting(false) } }}>
         <h3 className="panel-title">Submit request</h3>
-        <label>Issue title<input value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Broken corridor light" required /></label>
+        <label>Issue title<input maxLength={120} value={form.title} onChange={event => setForm(current => ({ ...current, title: event.target.value }))} placeholder="Broken corridor light" required /></label>
         <label>Category<select value={form.category} onChange={event => setForm(current => ({ ...current, category: event.target.value }))}><option>Electrical</option><option>Water</option><option>Cleanliness</option><option>Furniture</option><option>Internet</option></select></label>
-        <label>Location<input value={form.location} onChange={event => setForm(current => ({ ...current, location: event.target.value }))} placeholder="Block A, corridor 2" required /></label>
-        <label>Image URL<input value={form.image} onChange={event => setForm(current => ({ ...current, image: event.target.value }))} placeholder="https://..." /></label>
-        <label>Details<textarea value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))} rows="4" placeholder="Describe the issue and when it started." required /></label>
-        <button type="submit" className="button button-dark">Send request</button>
+        <label>Location<input maxLength={160} value={form.location} onChange={event => setForm(current => ({ ...current, location: event.target.value }))} placeholder="Block A, corridor 2" required /></label>
+        <div className="photo-form-field"><span>Issue photo (optional)</span><ImageUploadControls image={form.image} onChange={image => setForm(current => ({ ...current, image }))} onError={setImageError} /><label>Or image URL<input type="url" maxLength={2048} value={form.image.startsWith('data:') ? '' : form.image} onChange={event => setForm(current => ({ ...current, image: event.target.value }))} placeholder="https://..." /></label>{imageError && <span className="image-form-error" role="alert">{imageError}</span>}</div>
+        <label>Details<textarea maxLength={1500} value={form.description} onChange={event => setForm(current => ({ ...current, description: event.target.value }))} rows="4" placeholder="Describe the issue and when it started." required /></label>
+        <button type="submit" className="button button-dark" disabled={posting}>{posting ? 'Sending…' : 'Send request'}</button>
       </form>
     </div>
   </div>
@@ -646,20 +1009,24 @@ function ServicesSection({ navigate }) {
 
 function Metric({ icon: Icon, value, label, detail, color, onClick }) { return <button className="metric-card" onClick={onClick}><div className={`metric-icon ${color}-bg`}><Icon size={19} /></div><strong className="metric-value">{value}</strong><span>{label}</span><small>{detail}</small><ArrowUpRight className="metric-arrow" size={16} /></button> }
 
-function Exchange({ listings, onSave, onCreate, onOffer, currentUserId }) {
+function Exchange({ listings, isAdmin, onSave, onCreate, onOffer, onDelete, onEdit, onRequest, currentUserId }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('All items')
-  const filtered = listings.filter(item => item.postType === 'wanted' && item.status === 'Open' && `${item.title} ${item.category} ${item.owner}`.toLowerCase().includes(query.toLowerCase()) && (category === 'All items' || item.category === category))
+  const filtered = listings.filter(item => {
+    return item.postType === 'wanted' && item.status === 'Open'
+      && `${item.title} ${item.category} ${item.owner} ${item.description || ''}`.toLowerCase().includes(query.toLowerCase())
+      && (category === 'All items' || item.category === category)
+  })
   return <>
-    <PageIntro eyebrow="RESOURCE EXCHANGE" title="Ask for what you need." body="Post a resource request. If another student has it, they can message you directly." action="Request a resource" onAction={onCreate} />
+    <PageIntro eyebrow="RESOURCE EXCHANGE" title="Find what you need." body="See what students need and offer a resource to help." action="Request a resource" onAction={onCreate} />
     <section className="module-toolbar">
-      <div className="search-field"><Search size={18} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search requested resources..." /></div>
+      <div className="search-field"><Search size={18} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search wanted resources..." /></div>
       <div className="filter-pills">{['All items', 'Books', 'Electronics', 'Study gear', 'Room & living'].map(item => <button className={category === item ? 'selected' : ''} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
       <span className="result-count">{filtered.length} results</span>
     </section>
     <div className="exchange-layout">
       <aside className="exchange-aside">
-        <div className="aside-card dark-card"><Sparkles size={21} /><strong>Have what<br />someone needs?</strong><span>Send them a message and offer to help.</span></div>
+        <div className="aside-card dark-card"><Sparkles size={21} /><strong>Have what<br />someone needs?</strong><span>Offer an item to a student who is looking for it.</span></div>
         <div className="aside-filter">
           <p className="eyebrow">How it works</p>
           <div className="step"><b>01</b><span><strong>Post a request</strong><small>Describe what you need</small></span></div>
@@ -668,8 +1035,8 @@ function Exchange({ listings, onSave, onCreate, onOffer, currentUserId }) {
         </div>
       </aside>
       <section className="listing-grid">
-        {filtered.map(item => <ListingCard key={item.id} item={item} isOwner={item.ownerId === currentUserId} onSave={() => onSave(item.id)} onOffer={() => onOffer(item)} />)}
-        {filtered.length === 0 && <div className="empty-state"><Search size={28} /><strong>No open requests yet.</strong><span>Post what you need, and a student who has it can message you.</span></div>}
+        {filtered.map(item => <ListingCard key={item.id} item={item} isOwner={item.ownerId === currentUserId} isAdmin={isAdmin} onSave={() => onSave(item.id)} onOffer={() => onOffer(item)} onRequest={() => onRequest(item)} onDelete={() => onDelete(item.id)} onEdit={() => onEdit(item)} />)}
+        {filtered.length === 0 && <div className="empty-state"><Search size={28} /><strong>No wanted resources match yet.</strong><span>Try another search or category, or post what you need.</span></div>}
       </section>
     </div>
   </>
@@ -680,28 +1047,44 @@ function formatPostedDate(value) {
   return date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : 'Date unavailable'
 }
 
-function ListingCard({ item, onSave, onOffer, isOwner }) {
+function ListingCard({ item, onSave, onOffer, onRequest, onDelete, onEdit, isOwner, isAdmin }) {
+  const isResource = item.postType === 'resource'
+  const unavailable = item.availabilityStatus === 'Borrowed'
   return <article className="listing-card">
     <div className="listing-image">
       {item.image ? <img src={item.image} alt="" /> : <div className="listing-placeholder"><PackageOpen size={32} /></div>}
-      <span className="listing-mode">Looking for</span>
+      <span className="listing-mode">{isResource ? (unavailable ? 'Checked out' : item.mode || 'Available') : 'Looking for'}</span>
       <button className={`save-button ${item.saved ? 'saved' : ''}`} onClick={onSave} aria-label="Save request"><Heart size={17} fill={item.saved ? 'currentColor' : 'none'} /></button>
     </div>
     <div className="listing-body">
       <div className="listing-meta"><CalendarDays size={13} /><span>Posted {formatPostedDate(item.createdAt)}</span></div>
       <h3>{item.title}</h3>
       {item.description && <p className="listing-description">{item.description}</p>}
+      {isResource && <div className="listing-resource-details"><span>{item.condition || 'Condition not listed'}</span><span>{item.category}</span></div>}
       <div className="listing-footer">
-        <div className={`avatar avatar-${item.color}`}>{item.initials}</div>
-        <span><strong>{item.owner}</strong><small>{item.category}</small></span>
-        {isOwner ? <span className="request-owner-label">Your request</span> : <button className="request-button" onClick={onOffer}>I have this</button>}
+        <div className={`avatar avatar-${item.color || 'blue'}`}>{item.initials || 'CL'}</div>
+        <span><strong>{item.owner || 'Campus student'}</strong><small>{item.category}</small></span>
+        {isOwner ? <span className="request-owner-label">{isResource ? 'Your listing' : 'Your request'}</span> : isResource && !isAdmin ? <button className="request-button" disabled={unavailable} onClick={onRequest}>{unavailable ? 'Unavailable' : 'Request item'}</button> : !isResource && !isAdmin ? <button className="request-button" onClick={onOffer}>I have this</button> : null}
+        {(isOwner || isAdmin) && isResource && <button type="button" className="text-button" onClick={onEdit}>Edit</button>}
+        {(isOwner || isAdmin) && <button type="button" className="text-button" disabled={isResource && unavailable} onClick={onDelete}>Delete</button>}
       </div>
     </div>
   </article>
 }
 
-function Events({ events: eventItems, registered, clubs, onRegister, onOpen, onCreate, onRemove }) {
-  return <LumoraEvents events={eventItems} registered={registered} clubs={clubs} onRegister={onRegister} onOpen={onOpen} onCreate={onCreate} onRemove={onRemove} />
+function Events({ events: eventItems, registered, clubs, isAdmin, onRegister, onOpen, onCreate, onRemove }) {
+  const [category, setCategory] = useState('All')
+  const [dateRange, setDateRange] = useState('upcoming')
+  const categories = ['All', ...new Set(eventItems.map(event => event.type).filter(Boolean))]
+  const today = new Date().toISOString().slice(0, 10)
+  const visibleEvents = eventItems.filter(event =>
+    (category === 'All' || event.type === category)
+    && (dateRange === 'all' || (dateRange === 'upcoming' ? !event.date || event.date >= today : event.date && event.date < today)),
+  )
+  return <div className="events-module">
+    <div className="module-toolbar event-filter-toolbar"><div className="filter-pills">{categories.map(item => <button type="button" className={category === item ? 'selected' : ''} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div><label className="search-field"><CalendarDays size={16} /><select aria-label="Filter events by date" value={dateRange} onChange={event => setDateRange(event.target.value)}><option value="upcoming">Upcoming</option><option value="past">Past events</option><option value="all">All dates</option></select></label></div>
+    <LumoraEvents events={visibleEvents} registered={registered} clubs={clubs} isAdmin={isAdmin} onRegister={onRegister} onOpen={onOpen} onCreate={onCreate} onRemove={onRemove} />
+  </div>
 }
 
 const lumoraVideos = [
@@ -710,7 +1093,7 @@ const lumoraVideos = [
   'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260702_081042_df7202bf-bd80-4b2b-bbc6-1f09ba2870e9.mp4',
   'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260702_080959_4cac5234-3573-464e-a5b7-76b94b8a7d61.mp4',
 ]
-function LumoraEvents({ events, registered, clubs, onRegister, onOpen, onCreate, onRemove }) {
+function LumoraEvents({ events, registered, clubs, isAdmin, onRegister, onOpen, onCreate, onRemove }) {
   const [activeEvent, setActiveEvent] = useState(0)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const [readyVideos, setReadyVideos] = useState([])
@@ -719,7 +1102,7 @@ function LumoraEvents({ events, registered, clubs, onRegister, onOpen, onCreate,
   const event = events[activeEvent % Math.max(events.length, 1)]
   const activeVideo = activeEvent % lumoraVideos.length
   const memberClubIds = clubs.filter(club => club.isMember).map(club => club.id)
-  const canRemove = event?.date && event.date < new Date().toISOString().slice(0, 10) && memberClubIds.includes(event.clubId)
+  const canRemove = isAdmin || (event?.date && event.date < new Date().toISOString().slice(0, 10) && memberClubIds.includes(event.clubId))
 
   useEffect(() => () => clearTimeout(cooldown.current), [])
   useEffect(() => setActiveEvent(index => events.length ? (index >= events.length - 1 ? events.length - 1 : index) : 0), [events.length])
@@ -750,7 +1133,7 @@ function LumoraEvents({ events, registered, clubs, onRegister, onOpen, onCreate,
         <h1>{event.title}</h1>
         <p className="lumora-subtext">{event.description}</p>
         <div className="lumora-event-facts"><span>{event.time}</span><span>{event.place}</span></div>
-        <div className="lumora-actions"><button className="lumora-primary" onClick={() => onRegister(event.id)}>{registered.includes(event.id) ? 'Going' : 'Join event'}<ArrowUpRight size={15} /></button><button className="lumora-secondary liquid-glass" onClick={() => onOpen(event)}>View details</button>{canRemove && <button className="lumora-secondary liquid-glass" onClick={() => onRemove(event.id)}>Remove past event</button>}</div>
+        <div className="lumora-actions"><button className="lumora-primary" disabled={!registered.includes(event.id) && event.spots === 0} onClick={() => onRegister(event.id)}>{registered.includes(event.id) ? 'Going' : event.spots === 0 ? 'Event full' : 'Join event'}<ArrowUpRight size={15} /></button><button className="lumora-secondary liquid-glass" onClick={() => onOpen(event)}>View details</button>{canRemove && <button className="lumora-secondary liquid-glass" onClick={() => onRemove(event.id)}>{isAdmin ? 'Remove event' : 'Remove past event'}</button>}</div>
       </> : <><div className="lumora-badge liquid-glass">Campus events</div><h1>No events listed</h1><p className="lumora-subtext">An approved club member can post the next campus event.</p></>}
       <button className="lumora-create-event" onClick={onCreate}><Plus size={14} /> Post a campus event</button>
       <div className="lumora-switcher" aria-label="Choose a campus event">{events.map((item, index) => <button type="button" key={item.id} className={index === activeEvent ? 'is-active' : ''} aria-current={index === activeEvent ? 'true' : undefined} onClick={() => selectEvent(index)}>{item.title}<span>{item.host}</span></button>)}</div>
@@ -879,13 +1262,13 @@ function ClubMemberships({ clubs, onRequest, onApprove }) {
         {!club.isMember && !club.requestPending && <button onClick={() => onRequest(club.id)}>Request to join</button>}
         {club.requestPending && <button disabled>Request pending</button>}
         {club.isMember && <span className="account-club-member">Approved member</span>}
-        {club.pendingRequests.length > 0 && <div className="club-pending-requests">
+        {club.canApproveRequests && club.pendingRequests.length > 0 && <div className="club-pending-requests">
           <span>Membership requests</span>
           {club.pendingRequests.map(joinRequest => <div key={joinRequest.id}><strong>{joinRequest.name}</strong><button onClick={() => onApprove(club.id, joinRequest.id)}>Approve</button></div>)}
         </div>}
       </article>)}
     </div>
-    <p className="account-clubs-note">A current club member must approve your request. Only approved members can post or remove events for their club.</p>
+    <p className="account-clubs-note">An administrator or a current club member approves requests. Only approved members can post or remove events for their club.</p>
   </section>
 }
 
@@ -954,7 +1337,7 @@ function profileDraft(profile) {
   }
 }
 
-function RequestHistory({ listings, offers, onCloseRequest }) {
+function RequestHistory({ listings, offers, onCloseRequest, onDeleteRequest }) {
   return <section className="request-history">
     <div className="section-heading"><div><p className="eyebrow">RESOURCE EXCHANGE</p><h2>Your requests &amp; messages</h2></div></div>
     <div className="activity-columns">
@@ -962,7 +1345,10 @@ function RequestHistory({ listings, offers, onCloseRequest }) {
         <h3>My resource requests</h3>
         {listings.length === 0 ? <p className="empty-copy">You haven’t requested anything yet.</p> : <div className="request-history-list">{listings.map(item => <div className="request-row" key={item.id}>
           <span><strong>{item.title}</strong><small>{formatPostedDate(item.createdAt)} · {item.status === 'Open' ? 'Open' : 'Received'}</small></span>
-          {item.status === 'Open' && <button className="close-request-button" onClick={() => onCloseRequest(item.id)}>Mark received</button>}
+          <div className="request-row-actions">
+            {item.status === 'Open' && <button className="close-request-button" onClick={() => onCloseRequest(item.id)}>Mark received</button>}
+            <button type="button" className="text-button" onClick={() => onDeleteRequest(item.id)}>Delete</button>
+          </div>
         </div>)}</div>}
       </div>
       <div>
@@ -978,36 +1364,85 @@ function RequestHistory({ listings, offers, onCloseRequest }) {
   </section>
 }
 
-function CreateListing({ onClose, onSubmit }) {
-  const [form, setForm] = useState({ title: '', category: 'Books', description: '', image: '' })
+function ResourceRequestHistory({ requests, currentUserId, onAction, onReview }) {
+  const mine = requests.filter(request => request.requesterId === currentUserId)
+  const received = requests.filter(request => request.ownerId === currentUserId)
+  const renderRequest = (request, isOwner) => <article className="resource-request-row" key={request.id}>
+    <div><strong>{request.listing?.title || 'Resource listing removed'}</strong><small>{isOwner ? `Requested by ${request.requesterName}` : `Owner: ${request.listing?.owner || 'Campus student'}`} · {formatPostedDate(request.requestedAt || request.createdAt)}</small>{request.message && <p>{request.message}</p>}</div>
+    <span className={`chip ${request.status === 'Approved' ? 'accent' : 'muted'}`}>{request.status}</span>
+    <div className="resource-request-actions">
+      {isOwner && request.status === 'Pending' && <><button className="text-button" onClick={() => onAction(request.id, 'approve')}>Approve</button><button className="text-button" onClick={() => onAction(request.id, 'reject')}>Decline</button></>}
+      {isOwner && request.status === 'Approved' && <button className="text-button" onClick={() => onAction(request.id, 'return')}>Mark returned</button>}
+      {!isOwner && request.status === 'Pending' && <button className="text-button" onClick={() => onAction(request.id, 'cancel')}>Cancel request</button>}
+      {!isOwner && request.status === 'Returned' && !request.reviewed && <ReviewForm onSubmit={(rating, comment) => onReview(request.id, rating, comment)} />}
+      {!isOwner && request.status === 'Returned' && request.reviewed && <small>Reviewed <Star size={13} fill="currentColor" /></small>}
+    </div>
+  </article>
+  return <section className="request-history">
+    <div className="section-heading"><div><p className="eyebrow">BORROW &amp; EXCHANGE</p><h2>Resource handovers</h2></div></div>
+    <div className="resource-request-columns">
+      <div><h3>Requests to me</h3>{received.length ? received.map(request => renderRequest(request, true)) : <p className="empty-copy">Requests for your resources will appear here.</p>}</div>
+      <div><h3>My requests</h3>{mine.length ? mine.map(request => renderRequest(request, false)) : <p className="empty-copy">Your requests to borrow or exchange resources will appear here.</p>}</div>
+    </div>
+  </section>
+}
+
+function ReviewForm({ onSubmit }) {
+  const [rating, setRating] = useState('5')
+  const [comment, setComment] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const submit = async event => {
+    event.preventDefault()
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      await onSubmit(Number(rating), comment)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return <form className="resource-review-form" onSubmit={submit}>
+    <label>Rate this exchange<select value={rating} onChange={event => setRating(event.target.value)}><option value="5">5 — Great</option><option value="4">4 — Good</option><option value="3">3 — Okay</option><option value="2">2 — Poor</option><option value="1">1 — Very poor</option></select></label>
+    <input aria-label="Optional review" maxLength={500} value={comment} onChange={event => setComment(event.target.value)} placeholder="Optional comment" />
+    <button type="submit" className="text-button" disabled={submitting}>{submitting ? 'Submitting…' : 'Submit review'}</button>
+  </form>
+}
+
+function AdminDashboard({ stats, users, onSuspend, onRefresh }) {
+  const [query, setQuery] = useState('')
+  const visibleUsers = users.filter(user => `${user.name} ${user.email} ${user.branch || ''}`.toLowerCase().includes(query.toLowerCase()))
+  const metrics = [
+    ['Active students', stats?.students ?? '—'],
+    ['Shared resources', stats?.resources ?? '—'],
+    ['Pending borrow requests', stats?.pendingResourceRequests ?? '—'],
+    ['Open lost & found', stats?.openLostFound ?? '—'],
+    ['Upcoming events', stats?.upcomingEvents ?? '—'],
+    ['Maintenance to resolve', stats?.unresolvedMaintenance ?? '—'],
+    ['Announcements', stats?.announcements ?? '—'],
+    ['Open resource requests', stats?.openWantedRequests ?? '—'],
+  ]
+  return <div className="module-shell">
+    <PageIntro eyebrow="ADMINISTRATION" title="Campus operations." body="Review campus activity and manage student access." action="Refresh data" onAction={onRefresh} />
+    <div className="admin-stats-grid">{metrics.map(([label, value]) => <article className="admin-stat-card" key={label}><span>{label}</span><strong>{value}</strong></article>)}</div>
+    <section className="panel-block admin-users-panel">
+      <div className="admin-users-heading"><div><h2 className="panel-title">Student accounts</h2><p>Suspend accounts that violate campus guidelines; suspended users cannot sign in.</p></div><label className="search-field"><Search size={16} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search students" /></label></div>
+      {visibleUsers.length ? <div className="admin-users-list">{visibleUsers.map(user => <article className="admin-user-row" key={user.id}><div><strong>{user.name}</strong><span>{user.email} · {user.branch || 'Branch not provided'} · Year {user.year || '—'}</span></div><span className={`chip ${user.suspendedAt ? 'muted' : 'accent'}`}>{user.suspendedAt ? 'Suspended' : 'Active'}</span><button className="text-button" disabled={user.role === 'admin'} onClick={() => onSuspend(user.id, !user.suspendedAt)}>{user.suspendedAt ? 'Restore access' : 'Suspend'}</button></article>)}</div> : <p className="empty-copy">No students match that search.</p>}
+    </section>
+  </div>
+}
+
+function CreateListing({ listing, onClose, onSubmit }) {
+  const [form, setForm] = useState(() => listing
+    ? { title: listing.title, category: listing.category, description: listing.description || '', image: listing.image || '', postType: listing.postType, condition: listing.condition || 'Good', mode: listing.mode || 'Borrow' }
+    : { title: '', category: 'Books', description: '', image: '', postType: 'wanted', condition: 'Good', mode: 'Borrow' })
   const [imageError, setImageError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const submissionInProgress = useRef(false)
   const loadImage = async file => {
     if (!file) return false
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 8 * 1024 * 1024) {
-      setImageError('Choose a JPEG, PNG, or WebP image under 8 MB.')
-      return false
-    }
     try {
-      const source = await new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve(reader.result)
-        reader.onerror = () => reject(new Error('The selected image could not be read.'))
-        reader.readAsDataURL(file)
-      })
-      const image = await new Promise((resolve, reject) => {
-        const loadedImage = new Image()
-        loadedImage.onload = () => resolve(loadedImage)
-        loadedImage.onerror = () => reject(new Error('The selected image could not be opened.'))
-        loadedImage.src = source
-      })
-      const scale = Math.min(1, 1000 / image.width, 800 / image.height)
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.max(1, Math.round(image.width * scale))
-      canvas.height = Math.max(1, Math.round(image.height * scale))
-      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height)
-      const resizedImage = canvas.toDataURL('image/jpeg', .76)
-      if (resizedImage.length > 3 * 1024 * 1024) throw new Error('That image is still too large after resizing. Choose a smaller photo.')
-      setForm(current => ({ ...current, image: resizedImage }))
+      const image = await processImageFile(file)
+      setForm(current => ({ ...current, image }))
       setImageError('')
       return true
     } catch (error) {
@@ -1052,17 +1487,25 @@ function CreateListing({ onClose, onSubmit }) {
     }
     window.open(`https://www.google.com/search?tbm=isch&q=${encodeURIComponent(form.title.trim())}`, '_blank', 'noopener,noreferrer')
   }
-  const submit = event => {
+  const submit = async event => {
     event.preventDefault()
-    if (!form.title.trim()) return
-    onSubmit(form)
+    if (!form.title.trim() || submissionInProgress.current) return
+    submissionInProgress.current = true
+    setSubmitting(true)
+    try {
+      await onSubmit(form)
+    } finally {
+      submissionInProgress.current = false
+      setSubmitting(false)
+    }
   }
   return <div className="modal-backdrop"><form className="modal listing-modal" onPaste={handlePaste} onSubmit={submit}>
-    <button type="button" className="modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
-    <p className="eyebrow">RESOURCE REQUEST</p><h2>What do you need?</h2>
-    <p className="modal-copy">Post what you’re looking for. Students who have it can message you with an offer.</p>
+    <button type="button" className="modal-close" onClick={onClose} aria-label="Close" disabled={submitting}><X size={18} /></button>
+    <p className="eyebrow">RESOURCE EXCHANGE</p><h2>{listing ? 'Edit resource listing.' : 'Request a resource.'}</h2>
+    {!listing && <p className="modal-copy">Describe what you need. Students who have it can message you with an offer.</p>}
     <label>Resource name<input autoFocus maxLength={120} required value={form.title} onChange={event => setForm({ ...form, title: event.target.value })} placeholder="e.g. A graphing calculator" /></label>
     <label>Category<select value={form.category} onChange={event => setForm({ ...form, category: event.target.value })}><option>Books</option><option>Electronics</option><option>Study gear</option><option>Room & living</option></select></label>
+    {form.postType === 'resource' && <><label>Exchange type<select value={form.mode} onChange={event => setForm({ ...form, mode: event.target.value })}><option>Borrow</option><option>Exchange</option><option>Give away</option></select></label><label>Condition<select value={form.condition} onChange={event => setForm({ ...form, condition: event.target.value })}><option>New</option><option>Like new</option><option>Good</option><option>Fair</option></select></label></>}
     <label>Details (optional)<textarea maxLength={500} rows={3} value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} placeholder="Add details like the model, size, or when you need it." /></label>
     <div className="image-request-field">
       <div className="image-request-actions">
@@ -1074,7 +1517,7 @@ function CreateListing({ onClose, onSubmit }) {
       <small>Optional. Upload a photo, or copy an image from Google Images and paste it here. The preview is resized before posting.</small>
       {imageError && <span className="image-form-error" role="alert">{imageError}</span>}
     </div>
-    <div className="modal-actions"><button type="button" className="button button-light" onClick={onClose}>Cancel</button><button className="button button-dark" type="submit">Post request <ArrowUpRight size={16} /></button></div>
+    <div className="modal-actions"><button type="button" className="button button-light" onClick={onClose} disabled={submitting}>Cancel</button><button className="button button-dark" type="submit" disabled={submitting}>{submitting ? listing ? 'Saving…' : 'Posting…' : listing ? 'Save changes' : 'Post request'} {!submitting && <ArrowUpRight size={16} />}</button></div>
   </form></div>
 }
 
@@ -1089,7 +1532,30 @@ function OfferModal({ listing, onClose, onSubmit }) {
   </form></div>
 }
 
-function AuthModal({ profile, onClose, onSignedOut }) { return <div className="modal-backdrop"><div className="modal auth-modal"><button className="modal-close" onClick={onClose}><X size={18} /></button><div className="auth-orb"><Leaf size={22} /></div><p className="eyebrow">CAMPUSLOOP ACCOUNT</p><h2>Welcome back, {profile.name.split(' ')[0]}.</h2><p className="modal-copy">Your account is securely connected to the CampusLoop API. Your listings, registrations, and profile changes are saved for your next visit.</p><div className="signed-in"><div className="avatar avatar-coral">{profile.name.split(' ').map(part => part[0]).join('')}</div><span><strong>{profile.email}</strong><small>Student account · NITW</small></span><Check size={18} /></div><button className="button button-dark full-button" onClick={onClose}>Continue to CampusLoop <ArrowUpRight size={16} /></button><button className="sign-out" onClick={onSignedOut}>Sign out</button></div></div> }
+function ResourceRequestModal({ listing, onClose, onSubmit }) {
+  const [message, setMessage] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const submit = async event => {
+    event.preventDefault()
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      const succeeded = await onSubmit(message)
+      if (succeeded) onClose()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+  return <div className="modal-backdrop"><form className="modal offer-modal" onSubmit={submit}>
+    <button type="button" className="modal-close" onClick={onClose} aria-label="Close" disabled={submitting}><X size={18} /></button>
+    <p className="eyebrow">RESOURCE EXCHANGE</p><h2>Request this item</h2>
+    <p className="modal-copy">{listing.owner} will review your request for “{listing.title}”.</p>
+    <label>Message (optional)<textarea maxLength={500} rows={4} value={message} onChange={event => setMessage(event.target.value)} placeholder="Let the owner know when you need it or what you can exchange." /></label>
+    <div className="modal-actions"><button type="button" className="button button-light" onClick={onClose} disabled={submitting}>Cancel</button><button className="button button-dark" type="submit" disabled={submitting}>{submitting ? 'Sending…' : 'Send request'} <ArrowUpRight size={16} /></button></div>
+  </form></div>
+}
+
+function AuthModal({ profile, onClose, onSignedOut }) { return <div className="modal-backdrop"><div className="modal auth-modal"><button className="modal-close" onClick={onClose}><X size={18} /></button><div className="auth-orb"><Leaf size={22} /></div><p className="eyebrow">CAMPUSLOOP ACCOUNT</p><h2>Welcome back, {profile.name.split(' ')[0]}.</h2><p className="modal-copy">Your account is securely connected to the CampusLoop API. Your listings, registrations, and profile changes are saved for your next visit.</p><div className="signed-in"><div className="avatar avatar-coral">{profile.name.split(' ').map(part => part[0]).join('')}</div><span><strong>{profile.email}</strong><small>{profile.role === 'admin' ? 'Administrator' : 'Student'} account · NITW</small></span><Check size={18} /></div><button className="button button-dark full-button" onClick={onClose}>Continue to CampusLoop <ArrowUpRight size={16} /></button><button className="sign-out" onClick={onSignedOut}>Sign out</button></div></div> }
 
 function EventModal({ event, registered, canViewGuestList, onClose, onRegister }) {
   const [guestList, setGuestList] = useState(null)
@@ -1121,20 +1587,20 @@ function EventModal({ event, registered, canViewGuestList, onClose, onRegister }
     <button className="modal-close" onClick={onClose} aria-label="Close event details"><X size={18} /></button>
     {event.image && <img src={event.image} alt="" />}
     <div className="event-modal-content"><button className="event-modal-back" onClick={onClose}><ArrowLeft size={14} /> Back to events</button><p className="eyebrow">{event.host} · {event.type}</p><h2 id="event-modal-title">{event.title}</h2><p>{event.description}</p>
-      <div className="event-modal-facts"><span><CalendarDays size={16} />{event.date ? new Date(`${event.date}T00:00:00`).toLocaleDateString() : 'Date to be announced'}</span><span><Clock3 size={16} />{event.time}</span><span><Compass size={16} />{event.place}</span></div>
+      <div className="event-modal-facts"><span><CalendarDays size={16} />{event.date ? new Date(`${event.date}T00:00:00`).toLocaleDateString() : 'Date to be announced'}</span><span><Clock3 size={16} />{event.time}</span><span><Compass size={16} />{event.place}</span><span><UsersRound size={16} />{event.registrationCount || 0} registered{event.capacity ? ` · ${event.spots} spots left` : ''}</span></div>
       {canViewGuestList && <section className="event-guest-list" aria-label={`Guest list for ${event.title}`}>
         <div className="event-guest-list-heading"><strong>Guest list</strong>{guestList && <span>{guestList.length} going</span>}</div>
         {guestListLoading ? <p>Loading attendees…</p> : guestListError ? <p role="alert">{guestListError}</p> : guestList?.length ? <ul>{guestList.map((attendee, index) => <li key={`${attendee.email}-${index}`}><strong>{attendee.name}</strong><a href={`mailto:${attendee.email}`}>{attendee.email}</a></li>)}</ul> : <p>No students have joined this event yet.</p>}
       </section>}
-      <button className={`button ${registered ? 'button-success' : 'button-dark'} full-button`} onClick={onRegister}>{registered ? <><Check size={15} /> You’re going</> : <>Join this event <Ticket size={15} /></>}</button>
+      <button className={`button ${registered ? 'button-success' : 'button-dark'} full-button`} disabled={!registered && event.spots === 0} onClick={onRegister}>{registered ? <><Check size={15} /> You’re going</> : event.spots === 0 ? 'Event full' : <>Join this event <Ticket size={15} /></>}</button>
     </div>
     </div>
   </div>
 }
 
-function CreateEventModal({ clubs, onClose, onSubmit }) {
-  const memberClubs = clubs.filter(club => club.isMember)
-  const [draft, setDraft] = useState({ title: '', type: 'Campus event', date: '', time: '', place: '', description: '', clubId: memberClubs[0]?.id || '' })
+function CreateEventModal({ clubs, isAdmin, onClose, onSubmit }) {
+  const memberClubs = clubs.filter(club => isAdmin || club.isMember)
+  const [draft, setDraft] = useState({ title: '', type: 'Campus event', date: '', time: '', place: '', description: '', capacity: '', clubId: memberClubs[0]?.id || '' })
   const [submitting, setSubmitting] = useState(false)
   const submit = async event => {
     event.preventDefault()
@@ -1156,6 +1622,7 @@ function CreateEventModal({ clubs, onClose, onSubmit }) {
       <label>Date<input type="date" min={new Date().toISOString().slice(0, 10)} required value={draft.date} onChange={event => setDraft({ ...draft, date: event.target.value })} /></label>
       <label>Time<input required maxLength={80} value={draft.time} onChange={event => setDraft({ ...draft, time: event.target.value })} placeholder="e.g. 5:00 PM - 7:00 PM" /></label>
       <label>Location<input required maxLength={120} value={draft.place} onChange={event => setDraft({ ...draft, place: event.target.value })} placeholder="Campus venue" /></label>
+      <label>Capacity (optional)<input type="number" min="1" max="5000" step="1" value={draft.capacity} onChange={event => setDraft({ ...draft, capacity: event.target.value })} placeholder="Leave blank for unlimited registration" /></label>
       <label>Details (optional)<textarea rows={3} maxLength={500} value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label>
       <p className="modal-copy">Each club can list up to two upcoming events at a time.</p>
       <div className="modal-actions"><button type="button" className="button button-light" onClick={onClose} disabled={submitting}>Cancel</button><button className="button button-dark" type="submit" disabled={submitting}>{submitting ? 'Posting event…' : <>Post event <ArrowUpRight size={16} /></>}</button></div>
@@ -1163,4 +1630,26 @@ function CreateEventModal({ clubs, onClose, onSubmit }) {
   </form></div>
 }
 
-createRoot(document.getElementById('root')).render(<App />)
+class AppErrorBoundary extends React.Component {
+  state = { error: null }
+
+  static getDerivedStateFromError(error) {
+    return { error }
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('CampusLoop interface crashed:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.error) return <main className="app-loading" role="alert">
+      <div className="brand-mark"><CircleHelp size={17} /></div>
+      <strong>CampusLoop hit an unexpected error</strong>
+      <span>Your account data is stored on the server. Reload the site to recover the interface.</span>
+      <button className="button button-dark" onClick={() => window.location.reload()}>Reload CampusLoop</button>
+    </main>
+    return this.props.children
+  }
+}
+
+createRoot(document.getElementById('root')).render(<AppErrorBoundary><App /></AppErrorBoundary>)
