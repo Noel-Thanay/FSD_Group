@@ -1,8 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createPortal } from 'react-dom'
-import gsap from 'gsap'
-import Lenis from 'lenis'
 import { motion, useInView } from 'framer-motion'
 import * as THREE from 'three'
 import WAVES from 'vanta/dist/vanta.waves.min.js'
@@ -104,16 +102,16 @@ function ImageUploadControls({ image, onChange, onError }) {
 
 const events = [
   { id: 'event-yrc-blood-donation', month: 'TBA', day: '—', title: 'Blood Donation Camp', type: 'Community service', time: 'To be announced', place: 'Student Activity Centre', host: 'Youth Red Cross (YRC)', color: 'mint', description: 'A campus blood donation drive organized by YRC.' },
-  { id: 'event-painting-face-painting', month: 'TBA', day: '—', title: 'Face Painting', type: 'Arts & culture', time: 'To be announced', place: 'Student Activity Centre', host: 'Painting and Animation', color: 'purple', description: 'A creative face-painting session hosted by Painting and Animation.' },
+  { id: 'event-painting-face-painting', month: 'TBA', day: '—', title: 'Face Painting', type: 'Arts & culture', time: 'To be announced', place: 'Student Activity Centre', host: 'Painting and Animation', color: 'green', description: 'A creative face-painting session hosted by Painting and Animation.' },
   { id: 'event-student-council-diwali', month: 'TBA', day: '—', title: 'Diwali Celebration', type: 'Festival', time: 'To be announced', place: 'NIT Warangal Stadium', host: 'Student Council', color: 'orange', description: 'A campus Diwali celebration organized by the Student Council at the stadium.' },
   { id: 'event-athletics-badminton', month: 'TBA', day: '—', title: 'Intramural Badminton', type: 'Sports', time: 'To be announced', place: 'Indoor Badminton Courts', host: 'Athletics', color: 'blue', description: 'An Athletics-organized intramural badminton event for students.' },
 ]
 
 const navItems = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-  { id: 'exchange', label: 'Resource exchange', icon: PackageOpen, count: 12 },
+  { id: 'exchange', label: 'Resource exchange', icon: PackageOpen },
   { id: 'announcements', label: 'Announcements', icon: Bell },
-  { id: 'events', label: 'Events calendar', icon: CalendarDays, count: 4 },
+  { id: 'events', label: 'Events calendar', icon: CalendarDays },
   { id: 'lost-found', label: 'Lost & Found', icon: Compass },
   { id: 'maintenance', label: 'Maintenance', icon: Settings },
   { id: 'profile', label: 'My profile', icon: UserRound },
@@ -122,8 +120,52 @@ const navItems = [
 const validViews = new Set(navItems.map(item => item.id))
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api'
+const PREVIEW_MODE_KEY = 'campusloop-ui-preview'
+const previewProfile = {
+  id: 'preview-student',
+  name: 'Maya Patel',
+  email: 'maya.patel@student.nitw.ac.in',
+  role: 'admin',
+  branch: 'Computer Science',
+  year: '3',
+  hostel: 'Godavari',
+  phone: '+91 98765 43210',
+  createdAt: '2025-08-15T00:00:00.000Z',
+}
+const previewListings = [
+  { id: 'preview-listing-1', title: 'Graphing calculator for tomorrow’s exam', category: 'Study gear', owner: 'Aarav Sharma', initials: 'AS', color: 'green', description: 'Looking to borrow one for the afternoon. I can pick it up near the library.', postType: 'wanted', status: 'Open', createdAt: '2026-10-28T10:00:00.000Z' },
+  { id: 'preview-listing-2', title: 'Desk lamp available to borrow', category: 'Room & living', owner: 'Maya Patel', ownerId: previewProfile.id, initials: 'MP', color: 'coral', description: 'Available this week. Works well and includes the bulb.', postType: 'resource', status: 'Open', mode: 'Borrow', condition: 'Good', createdAt: '2026-10-25T10:00:00.000Z' },
+  { id: 'preview-listing-3', title: 'Second-year engineering textbooks', category: 'Books', owner: 'Rohan Kumar', initials: 'RK', color: 'blue', description: 'Looking for a few recommended texts for this semester.', postType: 'wanted', status: 'Open', createdAt: '2026-10-22T10:00:00.000Z' },
+]
+const previewEvents = [
+  { id: 'preview-event-1', title: 'Campus Open Mic', type: 'Arts & culture', description: 'An evening of music and performances from the campus community.', date: '2026-11-22', time: '6:00 PM', place: 'Student Activity Centre', host: 'Student Council', spots: 40, capacity: 40 },
+  { id: 'preview-event-2', title: 'Weekend Badminton', type: 'Sports', description: 'Friendly doubles games open to students of all experience levels.', date: '2026-11-28', time: '9:00 AM', place: 'Indoor Badminton Courts', host: 'Athletics', spots: 24, capacity: 24 },
+]
+const previewClubs = [
+  { id: 'preview-club-1', name: 'Student Council', isMember: true, requestPending: false, pendingRequests: [], canApproveRequests: false },
+  { id: 'preview-club-2', name: 'Photography Club', isMember: false, requestPending: false, pendingRequests: [], canApproveRequests: false },
+]
+const previewAnnouncements = [
+  { id: 'preview-announcement-1', title: 'Library hours extended during exams', category: 'Academic', content: 'The central library will remain open until midnight this week. Please carry your student ID when entering after 8 PM.', author: 'Academic Office', createdAt: '2026-10-29T10:00:00.000Z', pinned: true },
+  { id: 'preview-announcement-2', title: 'Student Council meeting this Friday', category: 'Club', content: 'Students are welcome to join the open meeting at the Student Activity Centre.', author: 'Student Council', createdAt: '2026-10-27T10:00:00.000Z', pinned: false },
+]
+const previewLostFoundItems = [
+  { id: 'preview-lost-found-1', title: 'Blue water bottle', type: 'found', category: 'Accessories', description: 'Found near the library entrance. Has a small sticker on the side.', location: 'Central Library', date: '2026-10-29', status: 'open', userId: 'preview-other-student', userName: 'Aarav Sharma', createdAt: '2026-10-29T10:00:00.000Z' },
+]
+const previewMaintenanceRequests = [
+  { id: 'preview-maintenance-1', title: 'Study room light needs replacing', category: 'Electrical', location: 'Library, second floor', description: 'One of the lights in the group study room is not working.', status: 'In Progress', userId: previewProfile.id, userName: previewProfile.name, createdAt: '2026-10-28T10:00:00.000Z' },
+]
+const previewAdminStats = { students: 128, resources: 34, pendingResourceRequests: 3, openLostFound: 2, upcomingEvents: 2, unresolvedMaintenance: 4, announcements: 6, openWantedRequests: 8 }
+const previewAdminUsers = [
+  previewProfile,
+  { id: 'preview-student-2', name: 'Aarav Sharma', email: 'aarav.sharma@student.nitw.ac.in', role: 'student', branch: 'Electrical Engineering', year: '2' },
+  { id: 'preview-student-3', name: 'Rohan Kumar', email: 'rohan.kumar@student.nitw.ac.in', role: 'student', branch: 'Mechanical Engineering', year: '3' },
+]
 
 async function apiFetch(path, options = {}) {
+  if (sessionStorage.getItem(PREVIEW_MODE_KEY) === 'true') {
+    throw new Error('This is a UI preview. Changes are not saved.')
+  }
   const retryableRead = !options.method || options.method.toUpperCase() === 'GET'
   let lastError
   for (let attempt = 0; attempt < (retryableRead ? 2 : 1); attempt += 1) {
@@ -176,20 +218,20 @@ async function apiFetch(path, options = {}) {
 }
 
 function App() {
+  const previewMode = sessionStorage.getItem(PREVIEW_MODE_KEY) === 'true'
   const [activeView, setActiveView] = useState(viewFromLocation)
-  const [navigationOpen, setNavigationOpen] = useState(false)
-  const [listings, setListings] = useState([])
-  const [events, setEvents] = useState([])
-  const [clubs, setClubs] = useState([])
+  const [listings, setListings] = useState(previewMode ? previewListings : [])
+  const [events, setEvents] = useState(previewMode ? previewEvents : [])
+  const [clubs, setClubs] = useState(previewMode ? previewClubs : [])
   const [registered, setRegistered] = useState([])
   const [offers, setOffers] = useState([])
   const [resourceRequests, setResourceRequests] = useState([])
-  const [adminStats, setAdminStats] = useState(null)
-  const [adminUsers, setAdminUsers] = useState([])
-  const [announcements, setAnnouncements] = useState([])
-  const [lostFoundItems, setLostFoundItems] = useState([])
-  const [maintenanceRequests, setMaintenanceRequests] = useState([])
-  const [profile, setProfile] = useState(null)
+  const [adminStats, setAdminStats] = useState(previewMode ? previewAdminStats : null)
+  const [adminUsers, setAdminUsers] = useState(previewMode ? previewAdminUsers : [])
+  const [announcements, setAnnouncements] = useState(previewMode ? previewAnnouncements : [])
+  const [lostFoundItems, setLostFoundItems] = useState(previewMode ? previewLostFoundItems : [])
+  const [maintenanceRequests, setMaintenanceRequests] = useState(previewMode ? previewMaintenanceRequests : [])
+  const [profile, setProfile] = useState(previewMode ? previewProfile : null)
   const [toast, setToast] = useState(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
@@ -200,7 +242,7 @@ function App() {
   const [listingToEdit, setListingToEdit] = useState(null)
   const [selectedResource, setSelectedResource] = useState(null)
   const [showNotifications, setShowNotifications] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!previewMode)
   const [loadError, setLoadError] = useState('')
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [apiUnavailable, setApiUnavailable] = useState(false)
@@ -239,6 +281,7 @@ function App() {
   useEffect(() => {
     async function loadApplication() {
       try {
+        if (previewMode) return
         const token = sessionStorage.getItem('campusloop-token')
         if (!token) return
         const auth = await apiFetch('/auth/me')
@@ -274,10 +317,10 @@ function App() {
       }
     }
     loadApplication()
-  }, [loadAttempt])
+  }, [loadAttempt, previewMode])
 
   useEffect(() => {
-    if (!profile) return undefined
+    if (!profile || previewMode) return undefined
     let syncing = false
     const syncSharedData = async () => {
       if (syncing || !sessionStorage.getItem('campusloop-token')) return
@@ -311,26 +354,7 @@ function App() {
       window.removeEventListener('storage', onStorage)
       window.removeEventListener('focus', onFocus)
     }
-  }, [profile])
-
-  useEffect(() => {
-    const lenis = new Lenis({ duration: 1.05, smoothWheel: true })
-    let frame
-    const raf = (time) => { lenis.raf(time); frame = requestAnimationFrame(raf) }
-    frame = requestAnimationFrame(raf)
-    return () => { cancelAnimationFrame(frame); lenis.destroy() }
-  }, [])
-
-  useEffect(() => {
-    if (!profile) return
-    gsap.fromTo('.app-shell', { opacity: 0 }, { opacity: 1, duration: 0.65, ease: 'power2.out' })
-    gsap.fromTo('.sidebar, .topbar, .hero-panel', { y: 12, opacity: 0 }, { y: 0, opacity: 1, duration: 0.8, stagger: 0.08, ease: 'power3.out' })
-  }, [profile])
-
-  useEffect(() => {
-    if (!profile) return
-    gsap.fromTo('.page-wrap > *', { y: 16, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55, stagger: 0.05, ease: 'power3.out' })
-  }, [activeView, profile])
+  }, [profile, previewMode])
 
   useEffect(() => {
     if (!toast) return
@@ -339,13 +363,13 @@ function App() {
   }, [toast])
 
   useEffect(() => {
-    if (activeView !== 'profile' || !profile) return undefined
+    if (activeView !== 'profile' || !profile || previewMode) return undefined
     let cancelled = false
     apiFetch('/offers/my')
       .then(result => { if (!cancelled) setOffers(result.offers) })
       .catch(error => { if (!cancelled) notify(error.message, CircleHelp) })
     return () => { cancelled = true }
-  }, [activeView, profile])
+  }, [activeView, profile, previewMode])
 
   const notify = (message, icon = Check) => setToast({ message, icon })
   const navigate = (view) => {
@@ -353,7 +377,6 @@ function App() {
     if (viewFromLocation() !== view) window.history.pushState(null, '', `#${view}`)
     setActiveView(view)
     setSidebarOpen(false)
-    setNavigationOpen(false)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
   const announceSharedDataChange = () => {
@@ -536,25 +559,23 @@ function App() {
 
   if (loading) return <div className="app-loading"><div className="brand-mark"><Leaf size={17} /></div><strong>Opening CampusLoop</strong><span>Connecting to your campus space...</span></div>
   if (loadError) return <div className="app-loading"><div className="brand-mark"><CircleHelp size={17} /></div><strong>CampusLoop could not connect</strong><span>{loadError}</span><small>Check that the API is running, MongoDB Atlas is reachable, and your network is online.</small><button className="button button-dark" onClick={refreshApplication}>Retry connection</button></div>
-  if (!profile) return <LoginScreen notice={authNotice} />
+  if (!profile) return <LoginScreen notice={authNotice} onPreview={() => { sessionStorage.setItem(PREVIEW_MODE_KEY, 'true'); window.location.reload() }} />
 
   return (
-    <div className={`app-shell ${activeView === 'overview' ? 'overview-mode' : ''} ${activeView === 'exchange' ? 'exchange-mode' : ''} ${activeView === 'events' ? 'events-mode' : ''} ${activeView === 'profile' ? 'profile-mode' : ''}`}>
-      {activeView === 'overview' || activeView === 'profile' ? null : <SiteVideoBackground />}
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
+    <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
         <div className="brand"><div className="brand-mark"><Leaf size={17} strokeWidth={2.5} /></div><span>campus<span>loop</span></span></div>
         <div className="campus-switcher"><div className="campus-avatar">NITW</div><div><strong>NITW</strong><span>Student space</span></div><ChevronRight size={15} /></div>
         <p className="nav-label">Workspace</p>
-        <nav>{navItems.filter(item => !item.adminOnly || profile.role === 'admin').map(({ id, label, icon: Icon, count }) => <button key={id} className={`nav-item ${activeView === id ? 'active' : ''}`} onClick={() => navigate(id)}><Icon size={18} /><span>{label}</span>{count && <em>{count}</em>}</button>)}</nav>
+        <nav>{navItems.filter(item => !item.adminOnly || profile.role === 'admin').map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item ${activeView === id ? 'active' : ''}`} onClick={() => navigate(id)}><Icon size={18} /><span>{label}</span></button>)}</nav>
         <div className="sidebar-spacer" />
-        {activeView !== 'exchange' && <div className="sidebar-note"><Sparkles size={16} /><strong>Make campus yours.</strong><span>Small exchanges make a bigger place feel close.</span></div>}
+        {activeView !== 'exchange' && <div className="sidebar-note"><Leaf size={16} /><strong>Make campus yours.</strong><span>Small exchanges make a bigger place feel close.</span></div>}
         <button className="nav-item muted" onClick={() => navigate('profile')}><Settings size={18} /><span>Settings</span></button>
         <div className="sidebar-profile"><div className="avatar avatar-coral">{profile.name.split(' ').map(part => part[0]).join('')}</div><div><strong>{profile.name}</strong><span>{profile.role === 'admin' ? 'Administrator account' : 'Student account'}</span></div><button onClick={() => setShowAuth(true)} aria-label="Open account menu"><LogOut size={16} /></button></div>
       </aside>
 
       <main className="main-content">
+        {previewMode && <div className="preview-banner" role="status"><strong>UI preview</strong><span>Sample content only. Changes are not saved.</span><button type="button" onClick={() => { sessionStorage.removeItem(PREVIEW_MODE_KEY); window.location.reload() }}>Exit preview</button></div>}
         {apiUnavailable && <div className="connection-banner" role="status"><CircleHelp size={17} /><span>CampusLoop is having trouble reaching the server. Your changes may not have been saved.</span><button type="button" onClick={refreshApplication}>Reconnect</button></div>}
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setSidebarOpen(value => !value)} aria-label="Toggle navigation"><Menu size={20} /></button>
@@ -639,20 +660,12 @@ function App() {
         </div>
       </main>
 
-      <PageNavigation
-        activeView={activeView}
-        isOpen={navigationOpen}
-        onToggle={() => setNavigationOpen(open => !open)}
-        onNavigate={navigate}
-        isAdmin={profile.role === 'admin'}
-        onSignOut={() => { sessionStorage.removeItem('campusloop-token'); window.location.reload() }}
-      />
       {showCreate && <CreateListing onClose={() => setShowCreate(false)} onSubmit={addListing} />}
       {listingToEdit && <CreateListing listing={listingToEdit} onClose={() => setListingToEdit(null)} onSubmit={draft => updateListing(listingToEdit.id, draft)} />}
       {showEventCreate && <CreateEventModal clubs={clubs} isAdmin={profile.role === 'admin'} onClose={() => setShowEventCreate(false)} onSubmit={createEvent} />}
       {selectedListing && <OfferModal listing={selectedListing} onClose={() => setSelectedListing(null)} onSubmit={message => sendOffer(selectedListing.id, message)} />}
       {selectedResource && <ResourceRequestModal listing={selectedResource} onClose={() => setSelectedResource(null)} onSubmit={message => requestResource(selectedResource.id, message)} />}
-      {showAuth && <AuthModal profile={profile} onClose={() => setShowAuth(false)} onSignedOut={() => { sessionStorage.removeItem('campusloop-token'); window.location.reload() }} />}
+      {showAuth && <AuthModal profile={profile} onClose={() => setShowAuth(false)} onSignedOut={() => { sessionStorage.removeItem('campusloop-token'); sessionStorage.removeItem(PREVIEW_MODE_KEY); window.location.reload() }} />}
       {selectedEvent && <EventModal event={events.find(item => item.id === selectedEvent.id) || selectedEvent} registered={registered.includes(selectedEvent.id)} canViewGuestList={profile.role === 'admin' || clubs.some(club => club.id === selectedEvent.clubId && club.isMember)} onClose={() => setSelectedEvent(null)} onRegister={() => { toggleRegistration(selectedEvent.id); setSelectedEvent(null) }} />}
       {toast && <div className="toast"><toast.icon size={17} /><span>{toast.message}</span></div>}
     </div>
@@ -793,7 +806,7 @@ function MainframeVideo() {
   return <video ref={videoRef} className="mainframe-video" muted playsInline preload="auto" src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260530_042513_df96a13b-6155-4f6e-8b93-c9dee66fba08.mp4" />
 }
 
-function LoginScreen({ notice = '' }) {
+function LoginScreen({ notice = '', onPreview }) {
   const [mode, setMode] = useState('login')
   const [form, setForm] = useState({ name: '', branch: '', year: '', hostel: '', phone: '', email: '', password: '', adminSetupKey: '' })
   const [error, setError] = useState('')
@@ -815,14 +828,13 @@ function LoginScreen({ notice = '' }) {
   const update = (field, value) => setForm(current => ({ ...current, [field]: value }))
 
   return <main className="mainframe-login">
-    <MainframeVideo />
-    <div className="mainframe-wash" />
     <section className="mainframe-hero" id="top">
       <aside className="mainframe-auth" id="auth">
         <p className="mainframe-auth-kicker">CAMPUSLOOP / {mode === 'login' ? 'STUDENT ACCESS' : 'NEW MEMBER'}</p>
         <h2>{mode === 'login' ? 'Welcome back.' : 'Join the loop.'}</h2>
         <form onSubmit={submit}>{mode === 'register' && <><label>Full name<input value={form.name} onChange={event => update('name', event.target.value)} placeholder="Maya Patel" required /></label><label>Branch<input value={form.branch} onChange={event => update('branch', event.target.value)} placeholder="Computer Science" required /></label><label>Year<input value={form.year} onChange={event => update('year', event.target.value)} placeholder="e.g. 3" required /></label><label>Hostel (optional)<input value={form.hostel} onChange={event => update('hostel', event.target.value)} placeholder="e.g. Godavari" /></label><label>Phone number<input type="tel" autoComplete="tel" value={form.phone} onChange={event => update('phone', event.target.value)} placeholder="+91 98765 43210" minLength={7} maxLength={25} pattern="\+?[0-9().\-\s]{7,25}" required /></label><label>Administrator setup key (if configured)<input type="password" autoComplete="off" value={form.adminSetupKey} onChange={event => update('adminSetupKey', event.target.value)} /></label></>}<label>Campus email<input type="email" value={form.email} onChange={event => update('email', event.target.value)} placeholder="you@student.nitw.ac.in" required /></label>{mode === 'register' && <small className="registration-email-hint">Use your @student.nitw.ac.in email address.</small>}<label>Password<input type="password" value={form.password} onChange={event => update('password', event.target.value)} minLength={6} required /></label>{notice && <p className="mainframe-form-error" role="alert">{notice}</p>}{error && <p className="mainframe-form-error" role="alert">{error}</p>}<button className="mainframe-submit" disabled={submitting}>{submitting ? 'Connecting...' : mode === 'login' ? 'Enter CampusLoop' : 'Create account'}<ArrowUpRight size={15} /></button></form>
         <button className="mainframe-switch" onClick={() => { const nextMode = mode === 'login' ? 'register' : 'login'; setMode(nextMode); setError(''); if (nextMode === 'register') update('email', '') }}>{mode === 'login' ? 'Create a student account' : 'Back to sign in'}</button>
+        <button type="button" className="mainframe-preview" onClick={onPreview}>Preview the campus UI</button>
       </aside>
     </section>
   </main>
@@ -965,17 +977,25 @@ function MaintenancePage({ requests, students = [], currentUserId, isAdmin, onAs
 }
 
 function Overview({ navigate }) {
-  return <main className="asme-overview">
-    <section className="asme-hero" id="asme-top">
-      <video className="asme-hero-video" src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260405_074625_a81f018a-956b-43fb-9aee-4d1508e30e6a.mp4" muted autoPlay playsInline preload="auto" loop />
-      <div className="asme-hero-shade" />
-      <div className="asme-hero-content"><h1>Make campus feel <em>closer</em>.</h1><button className="asme-manifesto liquid-glass" onClick={() => document.querySelector('#asme-about')?.scrollIntoView({ behavior: 'smooth' })}>Explore CampusLoop</button></div>
+  const shortcuts = [
+    { label: 'Resource exchange', detail: 'Find or share books, study gear, and useful items.', icon: PackageOpen, view: 'exchange' },
+    { label: 'Campus events', detail: 'See what is happening and register to attend.', icon: CalendarDays, view: 'events' },
+    { label: 'Lost & Found', detail: 'Report an item or help it get back to its owner.', icon: Compass, view: 'lost-found' },
+    { label: 'Maintenance', detail: 'Report a campus issue and follow its status.', icon: Settings, view: 'maintenance' },
+  ]
+  return <div className="module-shell overview-page">
+    <section className="overview-welcome">
+      <p className="eyebrow">YOUR CAMPUS, IN ONE PLACE</p>
+      <h1>Make campus life a little easier.</h1>
+      <p>Find what you need, share what you can, and stay up to date with the NIT Warangal community.</p>
+      <button className="button button-dark" onClick={() => navigate('exchange')}>Explore the resource exchange<ArrowRight size={16} /></button>
     </section>
-    <AboutSection />
-    <FeaturedVideoSection />
-    <PhilosophySection />
-    <ServicesSection navigate={navigate} />
-  </main>
+    <section className="overview-shortcuts" aria-labelledby="overview-shortcuts-title">
+      <div className="section-heading"><div><p className="eyebrow">CAMPUS SERVICES</p><h2 id="overview-shortcuts-title">What would you like to do?</h2></div></div>
+      <div className="overview-shortcut-grid">{shortcuts.map(({ label, detail, icon: Icon, view }) => <button type="button" className="overview-shortcut" key={view} onClick={() => navigate(view)}><span className="overview-shortcut-icon"><Icon size={19} /></span><span className="overview-shortcut-copy"><strong>{label}</strong><small>{detail}</small></span><ChevronRight size={17} /></button>)}</div>
+    </section>
+    <section className="overview-notices panel-block"><div><p className="eyebrow">CAMPUS UPDATES</p><h2>Stay in the loop.</h2><p>Read official notices, club updates, and important reminders.</p></div><button type="button" className="button button-light" onClick={() => navigate('announcements')}>View announcements<ArrowRight size={16} /></button></section>
+  </div>
 }
 
 function Reveal({ children, className = '', ...props }) {
@@ -1081,9 +1101,30 @@ function Events({ events: eventItems, registered, clubs, isAdmin, onRegister, on
     (category === 'All' || event.type === category)
     && (dateRange === 'all' || (dateRange === 'upcoming' ? !event.date || event.date >= today : event.date && event.date < today)),
   )
-  return <div className="events-module">
-    <div className="module-toolbar event-filter-toolbar"><div className="filter-pills">{categories.map(item => <button type="button" className={category === item ? 'selected' : ''} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div><label className="search-field"><CalendarDays size={16} /><select aria-label="Filter events by date" value={dateRange} onChange={event => setDateRange(event.target.value)}><option value="upcoming">Upcoming</option><option value="past">Past events</option><option value="all">All dates</option></select></label></div>
-    <LumoraEvents events={visibleEvents} registered={registered} clubs={clubs} isAdmin={isAdmin} onRegister={onRegister} onOpen={onOpen} onCreate={onCreate} onRemove={onRemove} />
+  return <div className="module-shell">
+    <PageIntro eyebrow="CAMPUS EVENTS" title="What's happening on campus." body="Find student activities, see the details, and join the events that interest you." action="Post an event" onAction={onCreate} />
+    <div className="module-toolbar event-filter-toolbar">
+      <div className="filter-pills">{categories.map(item => <button type="button" className={category === item ? 'selected' : ''} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
+      <label className="search-field"><CalendarDays size={16} /><select aria-label="Filter events by date" value={dateRange} onChange={event => setDateRange(event.target.value)}><option value="upcoming">Upcoming</option><option value="past">Past events</option><option value="all">All dates</option></select></label>
+    </div>
+    {visibleEvents.length ? <div className="campus-event-grid">{visibleEvents.map(event => {
+      const isRegistered = registered.includes(event.id)
+      const canRemove = isAdmin || (event.date && event.date < today && clubs.some(club => club.id === event.clubId && club.isMember))
+      const eventDate = event.date
+        ? new Date(`${event.date.slice(0, 10)}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+        : 'Date to be announced'
+      return <article className="campus-event-card" key={event.id}>
+        <div className="campus-event-card-header"><span className="chip">{event.type || 'Campus event'}</span><span>{eventDate}</span></div>
+        <h2>{event.title}</h2>
+        <p>{event.description}</p>
+        <div className="campus-event-details"><span><CalendarDays size={15} />{event.time || 'Time to be announced'}</span><span><Compass size={15} />{event.place || 'Location to be announced'}</span><span><UsersRound size={15} />Hosted by {event.host || 'Campus community'}</span></div>
+        <div className="campus-event-actions">
+          <button type="button" className="button button-dark" disabled={!isRegistered && event.spots === 0} onClick={() => onRegister(event.id)}>{isRegistered ? 'Cancel registration' : event.spots === 0 ? 'Event full' : 'Register'}</button>
+          <button type="button" className="button button-light" onClick={() => onOpen(event)}>View details</button>
+          {canRemove && <button type="button" className="text-button" onClick={() => onRemove(event.id)}>Remove event</button>}
+        </div>
+      </article>
+    })}</div> : <div className="empty-state"><strong>No events found</strong><span>Try another date or category, or post a new campus event.</span></div>}
   </div>
 }
 
@@ -1272,23 +1313,11 @@ function ClubMemberships({ clubs, onRequest, onApprove }) {
   </section>
 }
 
-const accountVideoUrls = [
-  'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260629_030107_874273ea-684a-4e90-bbb6-8fdfde48d53d.mp4',
-  'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260629_032424_3c9c2a9d-807b-4482-80e6-dd6d9dfd4545.mp4',
-  'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260627_094019_4214ea73-b963-46a4-8327-61489192de99.mp4',
-]
-
 function AccountHero({ profile, onSave }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(() => profileDraft(profile))
   const [saving, setSaving] = useState(false)
-  const [activeVideo, setActiveVideo] = useState(0)
   useEffect(() => setDraft(profileDraft(profile)), [profile])
-  useEffect(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return undefined
-    const interval = setInterval(() => setActiveVideo(index => (index + 1) % accountVideoUrls.length), 12000)
-    return () => clearInterval(interval)
-  }, [])
   const save = async event => {
     event.preventDefault()
     setSaving(true)
@@ -1303,8 +1332,6 @@ function AccountHero({ profile, onSave }) {
     ? createdDate.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
     : 'Not recorded'
   return <main className="account-hero account-profile-page">
-    <div className="account-video-stack" aria-hidden="true">{accountVideoUrls.map((source, index) => <video key={source} src={source} className={activeVideo === index ? 'is-active' : ''} muted autoPlay loop playsInline preload={index === 0 ? 'auto' : 'metadata'} />)}</div>
-    <div className="account-video-shade account-profile-shade" aria-hidden="true" />
     <header className="account-profile-header">
       <span className="account-profile-email">{profile.email}</span>
     </header>
