@@ -25,6 +25,7 @@ import {
   LogOut,
   Menu,
   MessageCircle,
+  Moon,
   PackageOpen,
   Plus,
   Search,
@@ -32,6 +33,7 @@ import {
   ShieldCheck,
   Sparkles,
   Star,
+  Sun,
   Ticket,
   UserRound,
   UsersRound,
@@ -219,6 +221,7 @@ async function apiFetch(path, options = {}) {
 
 function App() {
   const previewMode = sessionStorage.getItem(PREVIEW_MODE_KEY) === 'true'
+  const [theme, setTheme] = useState(() => localStorage.getItem('campusloop-theme') === 'dark' ? 'dark' : 'light')
   const [activeView, setActiveView] = useState(viewFromLocation)
   const [listings, setListings] = useState(previewMode ? previewListings : [])
   const [events, setEvents] = useState(previewMode ? previewEvents : [])
@@ -248,6 +251,10 @@ function App() {
   const [apiUnavailable, setApiUnavailable] = useState(false)
   const [authNotice, setAuthNotice] = useState('')
   const registrationInProgress = useRef(new Set())
+
+  useEffect(() => {
+    localStorage.setItem('campusloop-theme', theme)
+  }, [theme])
 
   useEffect(() => {
     const expireSession = event => {
@@ -372,6 +379,7 @@ function App() {
   }, [activeView, profile, previewMode])
 
   const notify = (message, icon = Check) => setToast({ message, icon })
+  const toggleTheme = () => setTheme(current => current === 'dark' ? 'light' : 'dark')
   const navigate = (view) => {
     if (!validViews.has(view)) return
     if (viewFromLocation() !== view) window.history.pushState(null, '', `#${view}`)
@@ -559,10 +567,10 @@ function App() {
 
   if (loading) return <div className="app-loading"><div className="brand-mark"><Leaf size={17} /></div><strong>Opening CampusLoop</strong><span>Connecting to your campus space...</span></div>
   if (loadError) return <div className="app-loading"><div className="brand-mark"><CircleHelp size={17} /></div><strong>CampusLoop could not connect</strong><span>{loadError}</span><small>Check that the API is running, MongoDB Atlas is reachable, and your network is online.</small><button className="button button-dark" onClick={refreshApplication}>Retry connection</button></div>
-  if (!profile) return <LoginScreen notice={authNotice} onPreview={() => { sessionStorage.setItem(PREVIEW_MODE_KEY, 'true'); window.location.reload() }} />
+  if (!profile) return <LoginScreen notice={authNotice} theme={theme} onToggleTheme={toggleTheme} onPreview={() => { sessionStorage.setItem(PREVIEW_MODE_KEY, 'true'); window.location.reload() }} />
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${theme === 'dark' ? 'theme-dark' : ''}`}>
       <aside className={`sidebar ${sidebarOpen ? 'is-open' : ''}`}>
         <div className="brand"><div className="brand-mark"><Leaf size={17} strokeWidth={2.5} /></div><span>campus<span>loop</span></span></div>
         <div className="campus-switcher"><div className="campus-avatar">NITW</div><div><strong>NITW</strong><span>Student space</span></div><ChevronRight size={15} /></div>
@@ -580,7 +588,7 @@ function App() {
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setSidebarOpen(value => !value)} aria-label="Toggle navigation"><Menu size={20} /></button>
           <div className="breadcrumb"><span>NITW</span><ChevronRight size={14} /><strong>{navItems.find(item => item.id === activeView)?.label || 'Overview'}</strong></div>
-          <div className="top-actions"><div className="search-mini"><Search size={16} /><input placeholder="Search campusloop" onChange={(event) => event.target.value && navigate('exchange')} /></div><button className="icon-button notification-button" onClick={() => setShowNotifications(!showNotifications)} aria-label="Notifications"><Bell size={18} /><i /></button><button className="avatar avatar-coral top-avatar" onClick={() => navigate('profile')}>{profile.name.split(' ').map(part => part[0]).join('')}</button></div>
+          <div className="top-actions"><div className="search-mini"><Search size={16} /><input placeholder="Search campusloop" onChange={(event) => event.target.value && navigate('exchange')} /></div><button type="button" className="theme-toggle-button" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-pressed={theme === 'dark'} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><button className="icon-button notification-button" onClick={() => setShowNotifications(!showNotifications)} aria-label="Notifications"><Bell size={18} /><i /></button><button className="avatar avatar-coral top-avatar" onClick={() => navigate('profile')}>{profile.name.split(' ').map(part => part[0]).join('')}</button></div>
           {showNotifications && <div className="notification-pop"><div className="pop-header"><strong>Notifications</strong><span>2 new</span></div><div className="notification-row"><div className="notification-dot green" /><span><strong>Meera</strong> saved your calculator listing.<small>8 minutes ago</small></span></div><div className="notification-row"><div className="notification-dot orange" /><span><strong>Open mic</strong> is almost full.<small>Yesterday</small></span></div></div>}
         </header>
 
@@ -806,7 +814,7 @@ function MainframeVideo() {
   return <video ref={videoRef} className="mainframe-video" muted playsInline preload="auto" src="https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260530_042513_df96a13b-6155-4f6e-8b93-c9dee66fba08.mp4" />
 }
 
-function LoginScreen({ notice = '', onPreview }) {
+function LoginScreen({ notice = '', theme, onToggleTheme, onPreview }) {
   const [mode, setMode] = useState('login')
   const [form, setForm] = useState({ name: '', branch: '', year: '', hostel: '', phone: '', email: '', password: '', adminSetupKey: '' })
   const [error, setError] = useState('')
@@ -827,7 +835,8 @@ function LoginScreen({ notice = '', onPreview }) {
   }
   const update = (field, value) => setForm(current => ({ ...current, [field]: value }))
 
-  return <main className="mainframe-login">
+  return <main className={`mainframe-login ${theme === 'dark' ? 'theme-dark' : ''}`}>
+    <button type="button" className="theme-toggle-button login-theme-toggle" onClick={onToggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-pressed={theme === 'dark'} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
     <section className="mainframe-hero" id="top">
       <aside className="mainframe-auth" id="auth">
         <p className="mainframe-auth-kicker">CAMPUSLOOP / {mode === 'login' ? 'STUDENT ACCESS' : 'NEW MEMBER'}</p>

@@ -26,18 +26,14 @@ git clone https://github.com/Mahith-Reddy-Gangu/FSD_Group.git
 cd FSD_Group
 ```
 
-### Windows
-
-Double-click `Start-CampusLoop.bat`. It installs dependencies from the committed lockfile the first time, then starts the API and website and opens the website in your browser. Later runs reuse the installed dependencies.
-
-### macOS or Linux
+### Windows, macOS, or Linux
 
 ```sh
 npm ci
 npm run dev:full
 ```
 
-Open <http://localhost:5173>. Stop the development server with `Ctrl+C`.
+Open <http://localhost:5173>. Stop the development servers with `Ctrl+C`.
 
 ### Configure MongoDB Atlas
 

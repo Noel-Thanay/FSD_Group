@@ -611,7 +611,7 @@ body { background: var(--paper); color: var(--ink); }
 .app-shell:not(.overview-mode) { background: var(--paper); }
 .app-shell:not(.overview-mode) .main-content { background: var(--paper); }
 .app-shell .ambient, .app-shell .site-video-background { display: none; }
-.sidebar { width: 248px; flex: none; height: 100vh; min-height: 0; padding: 25px 16px 16px; border-right: 1px solid var(--line); background: #fff; backdrop-filter: none; }
+.sidebar { width: 248px; flex: none; height: 100vh; min-height: 0; padding: 25px 16px 16px; border-right: 1px solid var(--line) !important; color: var(--ink); background: #fff !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 .sidebar .brand { padding: 0 10px 28px; color: var(--ink); font-size: 21px; }
 .sidebar .brand > span > span { color: #647d6d; }
 .sidebar .brand-mark, .sidebar .campus-avatar { color: #fff; background: var(--dark); border-radius: 8px; transform: none; }
@@ -742,7 +742,7 @@ body { background: var(--paper); color: var(--ink); }
 .account-club-card > button, .club-pending-requests button { border-color: var(--line); border-radius: 6px; color: #405b48; background: #fff; font-size: 12px; }
 .account-club-card > button:hover, .club-pending-requests button:hover { background: #edf3ee; }
 
-.mainframe-login { display: grid; min-height: 100vh; place-items: center; padding: 24px; color: var(--ink); background: var(--paper); }
+.mainframe-login { position: relative; display: grid; min-height: 100vh; place-items: center; padding: 24px; color: var(--ink); background: var(--paper); }
 .mainframe-hero { width: 100%; min-height: 0; justify-content: center; padding: 24px; }
 .mainframe-auth { max-width: 440px; padding: 28px; border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 12px 36px rgba(27, 45, 35, .07); backdrop-filter: none; animation: none; }
 .mainframe-auth-kicker { color: #647b6c; font-family: 'DM Sans', 'Segoe UI', sans-serif; font-weight: 600; letter-spacing: .08em; }
@@ -891,3 +891,246 @@ body { background: var(--paper); color: var(--ink); }
 .preview-banner span { color: #64746a; }
 .preview-banner button { margin-left: auto; padding: 5px 9px; border: 1px solid #d2dfd4; border-radius: 5px; color: #405b48; background: #fff; font-size: 11px; }
 .preview-banner button:hover { background: #f8faf8; }
+
+.app-shell.theme-dark,
+.mainframe-login.theme-dark {
+  color-scheme: dark;
+  --ink: #e8eee9;
+  --muted: #a4b0a7;
+  --line: #39453d;
+  --paper: #171c19;
+  --white: #222a25;
+  --dark: #456b52;
+  --green: #29372d;
+  --shadow: 0 8px 24px rgba(0, 0, 0, .2);
+}
+.app-shell.theme-dark,
+.app-shell.theme-dark .main-content,
+.app-shell.theme-dark .page-wrap { color: var(--ink); background: var(--paper); }
+.app-shell.theme-dark .sidebar,
+.app-shell.theme-dark .topbar,
+.app-shell.theme-dark .panel-block,
+.app-shell.theme-dark .detail-card,
+.app-shell.theme-dark .metric-card,
+.app-shell.theme-dark .listing-card,
+.app-shell.theme-dark .event-card,
+.app-shell.theme-dark .profile-card,
+.app-shell.theme-dark .profile-link,
+.app-shell.theme-dark .trust-card,
+.app-shell.theme-dark .aside-filter,
+.app-shell.theme-dark .request-history,
+.app-shell.theme-dark .overview-welcome,
+.app-shell.theme-dark .overview-shortcut,
+.app-shell.theme-dark .campus-event-card,
+.app-shell.theme-dark .account-profile-details,
+.app-shell.theme-dark .account-profile-form,
+.app-shell.theme-dark .account-clubs-panel,
+.app-shell.theme-dark .admin-stat-card,
+.app-shell.theme-dark .modal,
+.app-shell.theme-dark .notification-pop,
+.app-shell.theme-dark .toast,
+.app-shell.theme-dark .mainframe-auth {
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--white);
+}
+.app-shell.theme-dark .sidebar { background: #1d241f !important; }
+.app-shell.theme-dark .topbar { background: rgba(29, 36, 31, .98) !important; }
+.app-shell.theme-dark .sidebar .brand,
+.app-shell.theme-dark .sidebar .nav-item,
+.app-shell.theme-dark .breadcrumb strong,
+.app-shell.theme-dark .section-heading h2,
+.app-shell.theme-dark .page-intro h1,
+.app-shell.theme-dark .overview-welcome h1,
+.app-shell.theme-dark .campus-event-card h2,
+.app-shell.theme-dark .account-profile-identity h1,
+.app-shell.theme-dark .account-clubs-heading h2,
+.app-shell.theme-dark .mainframe-auth h2,
+.app-shell.theme-dark .modal h2,
+.app-shell.theme-dark .panel-title,
+.app-shell.theme-dark .detail-card h4,
+.app-shell.theme-dark .admin-stat-card strong,
+.app-shell.theme-dark .admin-user-row strong {
+  color: var(--ink);
+}
+.app-shell.theme-dark .sidebar .brand > span > span,
+.app-shell.theme-dark .sidebar .campus-switcher span,
+.app-shell.theme-dark .sidebar .sidebar-profile span,
+.app-shell.theme-dark .sidebar .nav-label,
+.app-shell.theme-dark .breadcrumb,
+.app-shell.theme-dark .page-intro .intro-copy,
+.app-shell.theme-dark .overview-welcome > p:not(.eyebrow),
+.app-shell.theme-dark .overview-shortcut-copy small,
+.app-shell.theme-dark .campus-event-card > p,
+.app-shell.theme-dark .campus-event-details,
+.app-shell.theme-dark .account-profile-details span,
+.app-shell.theme-dark .account-profile-email,
+.app-shell.theme-dark .account-club-summary span,
+.app-shell.theme-dark .account-club-member,
+.app-shell.theme-dark .account-clubs-note,
+.app-shell.theme-dark .modal-copy,
+.app-shell.theme-dark .detail-card p,
+.app-shell.theme-dark .meta-row,
+.app-shell.theme-dark .detail-footer,
+.app-shell.theme-dark .listing-meta,
+.app-shell.theme-dark .listing-footer small,
+.app-shell.theme-dark .event-detail,
+.app-shell.theme-dark .profile-details span,
+.app-shell.theme-dark .profile-stats span,
+.app-shell.theme-dark .request-history .empty-copy {
+  color: var(--muted) !important;
+}
+.app-shell.theme-dark .sidebar .campus-switcher,
+.app-shell.theme-dark .sidebar .sidebar-note,
+.app-shell.theme-dark .search-mini,
+.app-shell.theme-dark .search-field,
+.app-shell.theme-dark .empty-state,
+.app-shell.theme-dark .account-club-card,
+.app-shell.theme-dark .account-profile-edit,
+.app-shell.theme-dark .account-profile-form-actions .account-profile-cancel,
+.app-shell.theme-dark .modal-close,
+.app-shell.theme-dark .signed-in,
+.app-shell.theme-dark .event-guest-list,
+.app-shell.theme-dark .notification-row {
+  color: var(--ink);
+  border-color: var(--line);
+  background: #252e28 !important;
+}
+.app-shell.theme-dark .sidebar .nav-item:hover,
+.app-shell.theme-dark .sidebar .nav-item.active,
+.app-shell.theme-dark .filter-pills button.selected,
+.app-shell.theme-dark .filter-pills button:hover,
+.app-shell.theme-dark .overview-shortcut:hover,
+.app-shell.theme-dark .account-club-card > button:hover,
+.app-shell.theme-dark .club-pending-requests button:hover {
+  color: #e5eee7;
+  border-color: #44574a;
+  background: #2a382e !important;
+}
+.app-shell.theme-dark .sidebar .nav-item.active,
+.app-shell.theme-dark .sidebar .nav-item svg,
+.app-shell.theme-dark .sidebar .nav-item.active svg,
+.app-shell.theme-dark .sidebar .sidebar-note svg,
+.app-shell.theme-dark .overview-shortcut-icon,
+.app-shell.theme-dark .overview-shortcut > svg,
+.app-shell.theme-dark .campus-event-details svg,
+.app-shell.theme-dark .toast svg {
+  color: #a7c3ad;
+}
+.app-shell.theme-dark .sidebar .nav-item.active { color: #e5eee7; }
+.app-shell.theme-dark .sidebar .sidebar-note,
+.app-shell.theme-dark .preview-banner {
+  border-color: var(--line);
+  background: #252e28;
+}
+.app-shell.theme-dark .overview-shortcut-icon { background: #303d33; }
+.app-shell.theme-dark .search-mini input,
+.app-shell.theme-dark .search-field input,
+.app-shell.theme-dark .search-field select,
+.app-shell.theme-dark .form-panel input,
+.app-shell.theme-dark .form-panel select,
+.app-shell.theme-dark .form-panel textarea,
+.app-shell.theme-dark .announcement-edit-form input,
+.app-shell.theme-dark .announcement-edit-form select,
+.app-shell.theme-dark .announcement-edit-form textarea,
+.app-shell.theme-dark .resource-review-form input,
+.app-shell.theme-dark .resource-review-form select,
+.app-shell.theme-dark .resource-review-form textarea,
+.app-shell.theme-dark .listing-modal input,
+.app-shell.theme-dark .listing-modal select,
+.app-shell.theme-dark .event-create-modal input,
+.app-shell.theme-dark .event-create-modal select,
+.app-shell.theme-dark .event-create-modal textarea,
+.app-shell.theme-dark .account-profile-form input,
+.app-shell.theme-dark .mainframe-auth input {
+  color: var(--ink);
+  border-color: var(--line);
+  background: #171d19;
+}
+.app-shell.theme-dark .form-panel label,
+.app-shell.theme-dark .announcement-edit-form label,
+.app-shell.theme-dark .resource-review-form label,
+.app-shell.theme-dark .listing-modal label,
+.app-shell.theme-dark .event-create-modal label,
+.app-shell.theme-dark .account-profile-form label,
+.app-shell.theme-dark .mainframe-auth label {
+  color: #c2cdc4;
+}
+.app-shell.theme-dark .filter-pills button,
+.app-shell.theme-dark .text-button,
+.app-shell.theme-dark .account-club-card > button,
+.app-shell.theme-dark .club-pending-requests button,
+.app-shell.theme-dark .mainframe-switch,
+.app-shell.theme-dark .account-profile-edit,
+.app-shell.theme-dark .modal-close {
+  color: #bad0bf;
+}
+.app-shell.theme-dark .chip,
+.app-shell.theme-dark .listing-resource-details span,
+.app-shell.theme-dark .mode-select button.selected {
+  color: #c3d4c7;
+  border-color: #3e4e42;
+  background: #2a352d;
+}
+.app-shell.theme-dark .chip.accent {
+  color: #b7d2bd;
+  border-color: #405744;
+  background: #2b3c30;
+}
+.app-shell.theme-dark .avatar-coral,
+.app-shell.theme-dark .avatar-blue,
+.app-shell.theme-dark .avatar-green,
+.app-shell.theme-dark .avatar-yellow {
+  color: #d7e5da;
+  background: #3b4c40;
+}
+.app-shell.theme-dark .dark-card { background: #263d2e; }
+.app-shell.theme-dark .dark-card span,
+.app-shell.theme-dark .dark-card svg { color: #d5e4d8; }
+.app-shell.theme-dark .preview-banner { color: #d0dfd3; }
+.app-shell.theme-dark .preview-banner span { color: #a9b9ad; }
+.app-shell.theme-dark .preview-banner button {
+  color: #d6e4d9;
+  border-color: #45554a;
+  background: #303b33;
+}
+.app-shell.theme-dark .modal-backdrop { background: rgba(0, 0, 0, .64); }
+.app-shell.theme-dark .toast { box-shadow: 0 10px 28px rgba(0, 0, 0, .3); }
+.app-shell.theme-dark .button-light,
+.app-shell.theme-dark .account-profile-form-actions .account-profile-cancel {
+  color: var(--ink);
+  border-color: var(--line);
+  background: #252e28;
+}
+.app-shell.theme-dark .button-light:hover { background: #303b33; }
+.app-shell.theme-dark .button-dark { color: #fff; background: #456b52; }
+.app-shell.theme-dark .button-dark:hover { background: #527d60; }
+.app-shell.theme-dark .connection-banner {
+  color: #e0d4ae;
+  border-color: #584e34;
+  background: #383321;
+}
+
+.theme-toggle-button { display: grid; width: 36px; height: 36px; flex: none; place-items: center; border: 0; border-radius: 7px; color: #637269; background: transparent; }
+.theme-toggle-button:hover { color: var(--ink); background: #f4f6f3; }
+.app-shell.theme-dark .theme-toggle-button { color: #c0cec3; }
+.app-shell.theme-dark .theme-toggle-button:hover { color: #e8eee9; background: #2a382e; }
+.login-theme-toggle { position: absolute; top: 20px; right: 22px; }
+.mainframe-login.theme-dark { color: var(--ink); background: var(--paper); }
+.mainframe-login.theme-dark .mainframe-auth {
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--white);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .24);
+}
+.mainframe-login.theme-dark .mainframe-auth h2 { color: var(--ink); }
+.mainframe-login.theme-dark .mainframe-auth label { color: #c2cdc4; }
+.mainframe-login.theme-dark .mainframe-auth input {
+  color: var(--ink);
+  border-color: var(--line);
+  background: #171d19;
+}
+.mainframe-login.theme-dark .mainframe-auth-kicker,
+.mainframe-login.theme-dark .mainframe-switch { color: #bad0bf; }
+.mainframe-login.theme-dark .theme-toggle-button { color: #c0cec3; }
+.mainframe-login.theme-dark .theme-toggle-button:hover { color: #e8eee9; background: #2a382e; }
