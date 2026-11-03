@@ -22,7 +22,7 @@ The platform reduces student expenses, improves communication, and gives student
 ### Get the project
 
 ```sh
-git clone https://github.com/Mahith-Reddy-Gangu/FSD_Group.git
+git clone https://github.com/Noel-Thanay/FSD_Group.git
 cd FSD_Group
 ```
 
@@ -126,11 +126,11 @@ Students can discover and register for seminars, workshops, club activities, spo
 
 Features:
 
-- Admin or authorized users create events
+- Administrators create and remove events
 - Display event date, time, location, and description
 - Filter events by category and date
 - Register or cancel event registration
-- View the list of registered participants
+- Administrators can view the registered participants
 
 ### 5. Campus Help and Maintenance Requests
 
@@ -160,11 +160,10 @@ Features:
 
 ### Administrator
 
-- Manage students and user accounts
-- Manage resource categories
+- Search student accounts and suspend or restore student access
 - Moderate resource and lost and found listings
 - Publish announcements
-- Create and manage events
+- Create and remove events, and view event guest lists
 - Review and update maintenance requests
 - View dashboard statistics
 
