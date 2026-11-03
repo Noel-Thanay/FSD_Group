@@ -25,8 +25,6 @@ const collectionNames = [
   'requests',
   'offers',
   'clubs',
-  'clubMemberships',
-  'clubJoinRequests',
   'announcements',
   'lostFound',
   'maintenanceRequests',
@@ -63,8 +61,6 @@ const seed = {
   requests: [],
   offers: [],
   clubs,
-  clubMemberships: [],
-  clubJoinRequests: [],
   announcements: [{
     id: 'announcement-welcome',
     title: 'CampusLoop launch week',
@@ -135,14 +131,6 @@ function normalizeData(data) {
     data.clubs = clubs.map(club => ({ ...club }))
     migrated = true
   }
-  if (!Array.isArray(data.clubMemberships)) {
-    data.clubMemberships = []
-    migrated = true
-  }
-  if (!Array.isArray(data.clubJoinRequests)) {
-    data.clubJoinRequests = []
-    migrated = true
-  }
   if (!Array.isArray(data.announcements)) {
     data.announcements = []
     migrated = true
@@ -169,14 +157,12 @@ function localDataForMigration() {
   }
   const initialData = structuredClone(seed)
   initialData.users = []
-  initialData.clubMemberships = []
   return normalizeData(initialData).data
 }
 
 function mongoDocument(collectionName, item, index) {
   let id = item.id
   if (!id && collectionName === 'registrations') id = `${item.eventId}:${item.userId}`
-  if (!id && collectionName === 'clubMemberships') id = `${item.clubId}:${item.userId}`
   return { ...item, _id: String(id || `${collectionName}:${index}`) }
 }
 
@@ -301,17 +287,17 @@ function requireAdmin(request, response, next) {
   if (request.user?.role !== 'admin') {
     return response.status(403).json({ message: 'Administrator access is required.' })
   }
-
-  function isValidImage(image) {
-    if (typeof image !== 'string') return false
-    if (!image) return true
-    if (image.length <= 2048 && /^https?:\/\/\S+$/i.test(image)) return true
-    const match = image.match(/^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/)
-    if (!match || image.length > 3 * 1024 * 1024) return false
-    const bytes = Buffer.from(match[1], 'base64')
-    return bytes.length <= 2.25 * 1024 * 1024 && bytes.toString('base64') === match[1]
-  }
   return next()
+}
+
+function isValidImage(image) {
+  if (typeof image !== 'string') return false
+  if (!image) return true
+  if (image.length <= 2048 && /^https?:\/\/\S+$/i.test(image)) return true
+  const match = image.match(/^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/)
+  if (!match || image.length > 3 * 1024 * 1024) return false
+  const bytes = Buffer.from(match[1], 'base64')
+  return bytes.length <= 2.25 * 1024 * 1024 && bytes.toString('base64') === match[1]
 }
 
 const app = express()
@@ -350,12 +336,15 @@ app.post('/api/auth/register', async (request, response) => {
   const normalizedEmail = String(email || '').trim().toLowerCase()
   const normalizedPhone = typeof phone === 'string' ? phone.trim() : ''
   const phoneDigits = normalizedPhone.replace(/\D/g, '')
-  if (typeof name !== 'string' || !name.trim() || typeof branch !== 'string' || !branch.trim() || (typeof year !== 'string' && typeof year !== 'number') || !String(year).trim() || !normalizedEmail || typeof password !== 'string' || password.length < 6 || password.length > 128 || Buffer.byteLength(password, 'utf8') > 72 || !normalizedPhone) return response.status(400).json({ message: 'Name, branch, year, phone number, student email, and a password of 6 to 72 UTF-8 bytes are required.' })
+  if (typeof name !== 'string' || !name.trim() || typeof branch !== 'string' || !branch.trim() || (typeof year !== 'string' && typeof year !== 'number') || !String(year).trim() || !normalizedEmail || typeof password !== 'string' || password.length < 6 || password.length > 128 || Buffer.byteLength(password, 'utf8') > 72 || !normalizedPhone) return response.status(400).json({ message: 'Name, branch, year, phone number, email, and a password of 6 to 72 UTF-8 bytes are required.' })
   if (typeof hostel !== 'string') return response.status(400).json({ message: 'Hostel must be text.' })
-  if (!/^[^\s@]+@student\.nitw\.ac\.in$/.test(normalizedEmail)) return response.status(400).json({ message: 'Use your @student.nitw.ac.in student email address.' })
+  const isConfiguredAdmin = Boolean(adminEmail) && normalizedEmail === adminEmail
+  if (!isConfiguredAdmin && !/^[^\s@]+@student\.nitw\.ac\.in$/.test(normalizedEmail)) {
+    return response.status(400).json({ message: 'Use your @student.nitw.ac.in student email address or the configured administrator email.' })
+  }
   if (!/^\+?[0-9().\-\s]+$/.test(normalizedPhone) || phoneDigits.length < 7 || phoneDigits.length > 15) return response.status(400).json({ message: 'Enter a valid phone number with 7 to 15 digits.' })
   if (String(name).trim().length > 100 || String(branch).trim().length > 100 || String(year).trim().length > 20 || String(hostel).trim().length > 100 || normalizedPhone.length > 25) return response.status(400).json({ message: 'Name, branch, year, hostel, or phone number is too long.' })
-  const role = normalizedEmail === adminEmail && adminEmail
+  const role = isConfiguredAdmin
     ? request.body.adminSetupKey === adminSetupKey && adminSetupKey.length >= 24 ? 'admin' : null
     : 'student'
   if (!role) return response.status(403).json({ message: 'A valid administrator setup key is required for this account.' })
@@ -671,56 +660,14 @@ app.get('/api/events', requireAuth, (request, response) => {
 })
 
 app.get('/api/clubs', requireAuth, (request, response) => {
-  const data = request.data
-  const result = data.clubs.map(club => {
-    const isMember = data.clubMemberships.some(member => member.clubId === club.id && member.userId === request.user.id)
-    const canApproveRequests = isMember || request.user.role === 'admin'
-    const joinRequest = data.clubJoinRequests.find(item => item.clubId === club.id && item.userId === request.user.id && item.status === 'pending')
-    const pendingRequests = canApproveRequests
-      ? data.clubJoinRequests.filter(item => item.clubId === club.id && item.status === 'pending').map(item => ({
-        id: item.id,
-        userId: item.userId,
-        name: data.users.find(user => user.id === item.userId)?.name || 'Campus student',
-      }))
-      : []
-    return { ...club, isMember, canApproveRequests, requestPending: Boolean(joinRequest), pendingRequests }
-  })
-  response.json({ clubs: result })
+  response.json({ clubs: request.data.clubs })
 })
 
-app.post('/api/clubs/:id/join-requests', requireAuth, async (request, response) => {
-  const data = request.data
-  const club = data.clubs.find(item => item.id === request.params.id)
-  if (!club) return response.status(404).json({ message: 'Club not found.' })
-  if (data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(409).json({ message: 'You are already a member of this club.' })
-  if (data.clubJoinRequests.some(item => item.clubId === club.id && item.userId === request.user.id && item.status === 'pending')) return response.status(409).json({ message: 'Your request to join this club is already pending.' })
-  const joinRequest = { id: `club-request-${randomUUID()}`, clubId: club.id, userId: request.user.id, status: 'pending', createdAt: new Date().toISOString() }
-  data.clubJoinRequests.push(joinRequest)
-  await writeData(data)
-  response.status(201).json({ request: joinRequest })
-})
-
-app.post('/api/clubs/:id/join-requests/:requestId/approve', requireAuth, async (request, response) => {
-  const data = request.data
-  const club = data.clubs.find(item => item.id === request.params.id)
-  if (!club) return response.status(404).json({ message: 'Club not found.' })
-  if (request.user.role !== 'admin' && !data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'Only an existing club member or administrator can approve membership requests.' })
-  const joinRequest = data.clubJoinRequests.find(item => item.id === request.params.requestId && item.clubId === club.id)
-  if (!joinRequest || joinRequest.status !== 'pending') return response.status(404).json({ message: 'Pending membership request not found.' })
-  joinRequest.status = 'approved'
-  joinRequest.approvedAt = new Date().toISOString()
-  joinRequest.approvedBy = request.user.id
-  data.clubMemberships.push({ clubId: club.id, userId: joinRequest.userId, joinedAt: joinRequest.approvedAt })
-  await writeData(data)
-  response.json({ approved: true })
-})
-
-app.post('/api/events', requireAuth, async (request, response) => {
+app.post('/api/events', requireAuth, requireAdmin, async (request, response) => {
   const { title, type, date, time, place, description = '', clubId, capacity = 0 } = request.body
   const data = request.data
   const club = data.clubs.find(item => item.id === clubId)
   if (!club) return response.status(400).json({ message: 'Choose a valid organizing club.' })
-  if (request.user.role !== 'admin' && !data.clubMemberships.some(item => item.clubId === club.id && item.userId === request.user.id)) return response.status(403).json({ message: 'You must be an approved member of the organizing club to post an event.' })
   if (typeof title !== 'string' || !title.trim() || title.trim().length > 100 || typeof type !== 'string' || !type.trim() || type.trim().length > 60) return response.status(400).json({ message: 'Event name and type are required and must be within 100 and 60 characters.' })
   const parsedDate = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00.000Z`) : null
   const today = new Date().toISOString().slice(0, 10)
@@ -754,14 +701,11 @@ app.post('/api/events', requireAuth, async (request, response) => {
   response.status(201).json({ event: { ...event, registered: false } })
 })
 
-app.delete('/api/events/:id', requireAuth, async (request, response) => {
+app.delete('/api/events/:id', requireAuth, requireAdmin, async (request, response) => {
   const data = request.data
   const eventIndex = data.events.findIndex(item => item.id === request.params.id)
   if (eventIndex < 0) return response.status(404).json({ message: 'Event not found.' })
   const event = data.events[eventIndex]
-  if (request.user.role !== 'admin' && !data.clubMemberships.some(item => item.clubId === event.clubId && item.userId === request.user.id)) return response.status(403).json({ message: 'Only an approved member of the organizing club can remove this event.' })
-  const today = new Date().toISOString().slice(0, 10)
-  if (request.user.role !== 'admin' && (!event.date || event.date >= today)) return response.status(409).json({ message: 'An event can only be removed after its scheduled date has passed.' })
   data.events.splice(eventIndex, 1)
   data.registrations = data.registrations.filter(registration => registration.eventId !== event.id)
   await writeData(data)
@@ -786,12 +730,10 @@ app.post('/api/events/:id/registration', requireAuth, async (request, response) 
   response.json({ registered: !registered, registrationCount, spots: event.capacity ? Math.max(0, event.capacity - registrationCount) : null })
 })
 
-app.get('/api/events/:id/guest-list', requireAuth, (request, response) => {
+app.get('/api/events/:id/guest-list', requireAuth, requireAdmin, (request, response) => {
   const data = request.data
   const event = data.events.find(item => item.id === request.params.id)
   if (!event) return response.status(404).json({ message: 'Event not found.' })
-  const isOrganizer = data.clubMemberships.some(member => member.clubId === event.clubId && member.userId === request.user.id)
-  if (!isOrganizer && request.user.role !== 'admin') return response.status(403).json({ message: 'Only approved organizers or administrators can view this guest list.' })
   const attendees = data.registrations
     .filter(registration => registration.eventId === event.id)
     .map(registration => {

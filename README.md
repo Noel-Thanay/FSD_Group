@@ -45,12 +45,12 @@ Open <http://localhost:5173>. Stop the development servers with `Ctrl+C`.
    MONGODB_URI=mongodb+srv://<database-user>:<url-encoded-password>@<cluster-host>/?retryWrites=true&w=majority
    MONGODB_DB=campusloop
    JWT_SECRET=<a-random-secret-at-least-32-characters-long>
-   ADMIN_EMAIL=admin@student.nitw.ac.in
+   ADMIN_EMAIL=admin@nitw.ac.in
    ADMIN_SETUP_KEY=<a-private-random-value-at-least-24-characters-long>
    PORT=4000
    ```
 
-   Register the `ADMIN_EMAIL` address with the `ADMIN_SETUP_KEY` to create the initial administrator account. The key is required only during administrator registration; do not share it. After registration, sign in through the regular CampusLoop login with that email and the account password; the administrator dashboard and controls appear automatically. To promote an account that was already imported, set its `role` to `admin` in MongoDB Atlas Data Explorer as a trusted database operator.
+   Register the exact `ADMIN_EMAIL` address with the `ADMIN_SETUP_KEY` to create the initial administrator account. The administrator email may use `@nitw.ac.in` without `student` in the address; regular student registrations must still use `@student.nitw.ac.in`. The key is required only during administrator registration; do not share it. After registration, sign in through the regular CampusLoop login with that email and the account password; the administrator dashboard and controls appear automatically. To promote an account that was already imported, set its `role` to `admin` in MongoDB Atlas Data Explorer as a trusted database operator.
 4. Keep `.env` private; it is excluded from Git. Do not put the Atlas connection string in frontend variables.
 5. Start the app as described above. The API exits with a clear error if `MONGODB_URI` or a suitable `JWT_SECRET` is missing.
 
@@ -216,10 +216,10 @@ MongoDB Atlas
 - The resource exchange UI shows wanted resource requests so students can offer items to people who need them. Resource images are resized client-side and stored as JPEG data URLs in MongoDB; keep uploads small. For larger deployments, move these image bytes to an object-storage service and retain only the resulting URL.
 - Announcements support category/search filters and administrator create, edit, pin, and delete controls.
 - Lost-and-found supports lost/found filtering, search, contact, report editing, resolution, and owner/admin moderation. Reports accept an image URL or a resized photo uploaded from a computer/phone (including a camera capture on supported phones).
-- Events support category/date filters, club membership authorization, registration/cancellation, organizer/admin guest lists, and optional capacity limits.
+- Events support category/date filters, registration/cancellation, administrator-only posting, removal, and guest lists, plus optional capacity limits. Clubs are used only to label event hosts; there is no club membership or join-request workflow.
 - Students see only their own maintenance requests. Administrators can view all requests, assign active student accounts, move requests through Submitted → In Progress → Resolved, and review dashboard statistics. Requesters can confirm resolution. Maintenance reports accept an image URL or a resized photo upload/camera capture.
-- Club membership requests are approved by an administrator or a current club member. Administrators can review pending requests from the profile's **Campus clubs** section; only approved members can organize that club's events.
-- The administrator dashboard provides campus activity counts and student account search/suspension/restoration. Admin access is granted only through the configured registration setup key; administrators can create and remove events and manage campus content.
+- There is no club management or membership-request feature. Only administrators can create or remove campus events, view event guest lists, and create, edit, pin, or delete announcements. Students can browse events, register, and cancel their registration.
+- The administrator dashboard provides campus activity counts and student account search/suspension/restoration. Admin access is granted only through the configured registration setup key.
 - The UI retries transient reads, shows a connection warning when the API is unreachable, exposes a retry action on startup failures, clears expired sessions, and refreshes after stale-write conflicts. It preserves the active section in the URL hash on reload, broadcasts key resource/lost-and-found changes to other tabs, and refreshes those shared views periodically while signed in. The server validates request bodies and field limits, enforces role/ownership checks, rejects duplicate active resource requests and reviews, and returns explicit errors for unavailable database operations.
 - Maintenance and lost-and-found images currently use validated HTTP(S) URLs rather than Cloudinary uploads. Cloudinary credentials are not configured by this repository.
 

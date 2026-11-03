@@ -143,10 +143,6 @@ const previewEvents = [
   { id: 'preview-event-1', title: 'Campus Open Mic', type: 'Arts & culture', description: 'An evening of music and performances from the campus community.', date: '2026-11-22', time: '6:00 PM', place: 'Student Activity Centre', host: 'Student Council', spots: 40, capacity: 40 },
   { id: 'preview-event-2', title: 'Weekend Badminton', type: 'Sports', description: 'Friendly doubles games open to students of all experience levels.', date: '2026-11-28', time: '9:00 AM', place: 'Indoor Badminton Courts', host: 'Athletics', spots: 24, capacity: 24 },
 ]
-const previewClubs = [
-  { id: 'preview-club-1', name: 'Student Council', isMember: true, requestPending: false, pendingRequests: [], canApproveRequests: false },
-  { id: 'preview-club-2', name: 'Photography Club', isMember: false, requestPending: false, pendingRequests: [], canApproveRequests: false },
-]
 const previewAnnouncements = [
   { id: 'preview-announcement-1', title: 'Library hours extended during exams', category: 'Academic', content: 'The central library will remain open until midnight this week. Please carry your student ID when entering after 8 PM.', author: 'Academic Office', createdAt: '2026-10-29T10:00:00.000Z', pinned: true },
   { id: 'preview-announcement-2', title: 'Student Council meeting this Friday', category: 'Club', content: 'Students are welcome to join the open meeting at the Student Activity Centre.', author: 'Student Council', createdAt: '2026-10-27T10:00:00.000Z', pinned: false },
@@ -244,7 +240,6 @@ function App() {
   const [selectedListing, setSelectedListing] = useState(null)
   const [listingToEdit, setListingToEdit] = useState(null)
   const [selectedResource, setSelectedResource] = useState(null)
-  const [showNotifications, setShowNotifications] = useState(false)
   const [loading, setLoading] = useState(!previewMode)
   const [loadError, setLoadError] = useState('')
   const [loadAttempt, setLoadAttempt] = useState(0)
@@ -449,9 +444,10 @@ function App() {
     try {
       await apiFetch(`/listings/${id}/offers`, { method: 'POST', body: JSON.stringify({ message }) })
       announceSharedDataChange()
-      setSelectedListing(null)
       notify('Your message was sent to the student who posted the request', MessageCircle)
+      return true
     } catch (error) { notify(error.message, CircleHelp) }
+    return false
   }
   const closeListing = async (id) => {
     try {
@@ -530,24 +526,6 @@ function App() {
     } catch (error) { notify(error.message, CircleHelp) }
     return false
   }
-  const refreshClubs = async () => {
-    const result = await apiFetch('/clubs')
-    setClubs(result.clubs)
-  }
-  const requestClubMembership = async (clubId) => {
-    try {
-      await apiFetch(`/clubs/${clubId}/join-requests`, { method: 'POST' })
-      await refreshClubs()
-      notify('Membership request sent', UsersRound)
-    } catch (error) { notify(error.message, CircleHelp) }
-  }
-  const approveClubMembership = async (clubId, requestId) => {
-    try {
-      await apiFetch(`/clubs/${clubId}/join-requests/${requestId}/approve`, { method: 'POST' })
-      await refreshClubs()
-      notify('Student added to the club', UsersRound)
-    } catch (error) { notify(error.message, CircleHelp) }
-  }
   const createEvent = async (eventDraft) => {
     try {
       const result = await apiFetch('/events', { method: 'POST', body: JSON.stringify({ ...eventDraft, capacity: eventDraft.capacity ? Number(eventDraft.capacity) : 0 }) })
@@ -588,8 +566,7 @@ function App() {
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setSidebarOpen(value => !value)} aria-label="Toggle navigation"><Menu size={20} /></button>
           <div className="breadcrumb"><span>NITW</span><ChevronRight size={14} /><strong>{navItems.find(item => item.id === activeView)?.label || 'Overview'}</strong></div>
-          <div className="top-actions"><div className="search-mini"><Search size={16} /><input placeholder="Search campusloop" onChange={(event) => event.target.value && navigate('exchange')} /></div><button type="button" className="theme-toggle-button" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-pressed={theme === 'dark'} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><button className="icon-button notification-button" onClick={() => setShowNotifications(!showNotifications)} aria-label="Notifications"><Bell size={18} /><i /></button><button className="avatar avatar-coral top-avatar" onClick={() => navigate('profile')}>{profile.name.split(' ').map(part => part[0]).join('')}</button></div>
-          {showNotifications && <div className="notification-pop"><div className="pop-header"><strong>Notifications</strong><span>2 new</span></div><div className="notification-row"><div className="notification-dot green" /><span><strong>Meera</strong> saved your calculator listing.<small>8 minutes ago</small></span></div><div className="notification-row"><div className="notification-dot orange" /><span><strong>Open mic</strong> is almost full.<small>Yesterday</small></span></div></div>}
+          <div className="top-actions"><div className="search-mini"><Search size={16} /><input placeholder="Search campusloop" onChange={(event) => event.target.value && navigate('exchange')} /></div><button type="button" className="theme-toggle-button" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-pressed={theme === 'dark'} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button><button className="avatar avatar-coral top-avatar" onClick={() => navigate('profile')}>{profile.name.split(' ').map(part => part[0]).join('')}</button></div>
         </header>
 
         <div className="page-wrap">
@@ -616,7 +593,7 @@ function App() {
               notify('Announcement removed', Bell)
             } catch (error) { notify(error.message, CircleHelp) }
           }} />}
-          {activeView === 'events' && <Events events={events} registered={registered} clubs={clubs} isAdmin={profile.role === 'admin'} onRegister={toggleRegistration} onOpen={event => setSelectedEvent(events.find(item => item.id === event.id) || event)} onCreate={() => setShowEventCreate(true)} onRemove={removeEvent} />}
+          {activeView === 'events' && <Events events={events} registered={registered} isAdmin={profile.role === 'admin'} onRegister={toggleRegistration} onOpen={event => setSelectedEvent(events.find(item => item.id === event.id) || event)} onCreate={() => setShowEventCreate(true)} onRemove={removeEvent} />}
           {activeView === 'lost-found' && <LostFoundPage items={lostFoundItems} currentUserId={profile.id} isAdmin={profile.role === 'admin'} onUpdate={updateLostFound} onCreate={async (draft) => {
             try {
               const result = await apiFetch('/lost-found', { method: 'POST', body: JSON.stringify(draft) })
@@ -661,7 +638,7 @@ function App() {
               notify('Resolution confirmed', Check)
             } catch (error) { notify(error.message, CircleHelp) }
           }} />}
-          {activeView === 'profile' && <Profile profile={profile} onSave={updateProfile} clubs={clubs} onRequestClub={requestClubMembership} onApproveClubRequest={approveClubMembership} listings={listings} registered={registered} offers={offers} navigate={navigate} />}
+          {activeView === 'profile' && <Profile profile={profile} onSave={updateProfile} />}
           {activeView === 'profile' && <RequestHistory listings={listings.filter(item => item.ownerId === profile.id && item.postType === 'wanted')} offers={offers} onCloseRequest={closeListing} onDeleteRequest={deleteListing} />}
           {activeView === 'profile' && <ResourceRequestHistory requests={resourceRequests} currentUserId={profile.id} onAction={updateResourceRequest} onReview={submitReview} />}
           {activeView === 'admin' && profile.role === 'admin' && <AdminDashboard stats={adminStats} users={adminUsers} onSuspend={setUserSuspension} onRefresh={refreshApplication} />}
@@ -670,11 +647,11 @@ function App() {
 
       {showCreate && <CreateListing onClose={() => setShowCreate(false)} onSubmit={addListing} />}
       {listingToEdit && <CreateListing listing={listingToEdit} onClose={() => setListingToEdit(null)} onSubmit={draft => updateListing(listingToEdit.id, draft)} />}
-      {showEventCreate && <CreateEventModal clubs={clubs} isAdmin={profile.role === 'admin'} onClose={() => setShowEventCreate(false)} onSubmit={createEvent} />}
+      {showEventCreate && profile.role === 'admin' && <CreateEventModal clubs={clubs} onClose={() => setShowEventCreate(false)} onSubmit={createEvent} />}
       {selectedListing && <OfferModal listing={selectedListing} onClose={() => setSelectedListing(null)} onSubmit={message => sendOffer(selectedListing.id, message)} />}
       {selectedResource && <ResourceRequestModal listing={selectedResource} onClose={() => setSelectedResource(null)} onSubmit={message => requestResource(selectedResource.id, message)} />}
       {showAuth && <AuthModal profile={profile} onClose={() => setShowAuth(false)} onSignedOut={() => { sessionStorage.removeItem('campusloop-token'); sessionStorage.removeItem(PREVIEW_MODE_KEY); window.location.reload() }} />}
-      {selectedEvent && <EventModal event={events.find(item => item.id === selectedEvent.id) || selectedEvent} registered={registered.includes(selectedEvent.id)} canViewGuestList={profile.role === 'admin' || clubs.some(club => club.id === selectedEvent.clubId && club.isMember)} onClose={() => setSelectedEvent(null)} onRegister={() => { toggleRegistration(selectedEvent.id); setSelectedEvent(null) }} />}
+      {selectedEvent && <EventModal event={events.find(item => item.id === selectedEvent.id) || selectedEvent} registered={registered.includes(selectedEvent.id)} canViewGuestList={profile.role === 'admin'} onClose={() => setSelectedEvent(null)} onRegister={() => { toggleRegistration(selectedEvent.id); setSelectedEvent(null) }} />}
       {toast && <div className="toast"><toast.icon size={17} /><span>{toast.message}</span></div>}
     </div>
   )
@@ -841,7 +818,7 @@ function LoginScreen({ notice = '', theme, onToggleTheme, onPreview }) {
       <aside className="mainframe-auth" id="auth">
         <p className="mainframe-auth-kicker">CAMPUSLOOP / {mode === 'login' ? 'STUDENT ACCESS' : 'NEW MEMBER'}</p>
         <h2>{mode === 'login' ? 'Welcome back.' : 'Join the loop.'}</h2>
-        <form onSubmit={submit}>{mode === 'register' && <><label>Full name<input value={form.name} onChange={event => update('name', event.target.value)} placeholder="Maya Patel" required /></label><label>Branch<input value={form.branch} onChange={event => update('branch', event.target.value)} placeholder="Computer Science" required /></label><label>Year<input value={form.year} onChange={event => update('year', event.target.value)} placeholder="e.g. 3" required /></label><label>Hostel (optional)<input value={form.hostel} onChange={event => update('hostel', event.target.value)} placeholder="e.g. Godavari" /></label><label>Phone number<input type="tel" autoComplete="tel" value={form.phone} onChange={event => update('phone', event.target.value)} placeholder="+91 98765 43210" minLength={7} maxLength={25} pattern="\+?[0-9().\-\s]{7,25}" required /></label><label>Administrator setup key (if configured)<input type="password" autoComplete="off" value={form.adminSetupKey} onChange={event => update('adminSetupKey', event.target.value)} /></label></>}<label>Campus email<input type="email" value={form.email} onChange={event => update('email', event.target.value)} placeholder="you@student.nitw.ac.in" required /></label>{mode === 'register' && <small className="registration-email-hint">Use your @student.nitw.ac.in email address.</small>}<label>Password<input type="password" value={form.password} onChange={event => update('password', event.target.value)} minLength={6} required /></label>{notice && <p className="mainframe-form-error" role="alert">{notice}</p>}{error && <p className="mainframe-form-error" role="alert">{error}</p>}<button className="mainframe-submit" disabled={submitting}>{submitting ? 'Connecting...' : mode === 'login' ? 'Enter CampusLoop' : 'Create account'}<ArrowUpRight size={15} /></button></form>
+        <form onSubmit={submit}>{mode === 'register' && <><label>Full name<input value={form.name} onChange={event => update('name', event.target.value)} placeholder="Maya Patel" required /></label><label>Branch<input value={form.branch} onChange={event => update('branch', event.target.value)} placeholder="Computer Science" required /></label><label>Year<input value={form.year} onChange={event => update('year', event.target.value)} placeholder="e.g. 3" required /></label><label>Hostel (optional)<input value={form.hostel} onChange={event => update('hostel', event.target.value)} placeholder="e.g. Godavari" /></label><label>Phone number<input type="tel" autoComplete="tel" value={form.phone} onChange={event => update('phone', event.target.value)} placeholder="+91 98765 43210" minLength={7} maxLength={25} pattern="\+?[0-9().\-\s]{7,25}" required /></label><label>Administrator setup key (if configured)<input type="password" autoComplete="off" value={form.adminSetupKey} onChange={event => update('adminSetupKey', event.target.value)} /></label></>}<label>Campus email<input type="email" value={form.email} onChange={event => update('email', event.target.value)} placeholder="you@student.nitw.ac.in" required /></label>{mode === 'register' && <small className="registration-email-hint">Use your @student.nitw.ac.in email, or the configured administrator email.</small>}<label>Password<input type="password" value={form.password} onChange={event => update('password', event.target.value)} minLength={6} required /></label>{notice && <p className="mainframe-form-error" role="alert">{notice}</p>}{error && <p className="mainframe-form-error" role="alert">{error}</p>}<button className="mainframe-submit" disabled={submitting}>{submitting ? 'Connecting...' : mode === 'login' ? 'Enter CampusLoop' : 'Create account'}<ArrowUpRight size={15} /></button></form>
         <button className="mainframe-switch" onClick={() => { const nextMode = mode === 'login' ? 'register' : 'login'; setMode(nextMode); setError(''); if (nextMode === 'register') update('email', '') }}>{mode === 'login' ? 'Create a student account' : 'Back to sign in'}</button>
         <button type="button" className="mainframe-preview" onClick={onPreview}>Preview the campus UI</button>
       </aside>
@@ -1101,7 +1078,7 @@ function ListingCard({ item, onSave, onOffer, onRequest, onDelete, onEdit, isOwn
   </article>
 }
 
-function Events({ events: eventItems, registered, clubs, isAdmin, onRegister, onOpen, onCreate, onRemove }) {
+function Events({ events: eventItems, registered, isAdmin, onRegister, onOpen, onCreate, onRemove }) {
   const [category, setCategory] = useState('All')
   const [dateRange, setDateRange] = useState('upcoming')
   const categories = ['All', ...new Set(eventItems.map(event => event.type).filter(Boolean))]
@@ -1111,14 +1088,13 @@ function Events({ events: eventItems, registered, clubs, isAdmin, onRegister, on
     && (dateRange === 'all' || (dateRange === 'upcoming' ? !event.date || event.date >= today : event.date && event.date < today)),
   )
   return <div className="module-shell">
-    <PageIntro eyebrow="CAMPUS EVENTS" title="What's happening on campus." body="Find student activities, see the details, and join the events that interest you." action="Post an event" onAction={onCreate} />
+    <PageIntro eyebrow="CAMPUS EVENTS" title="What's happening on campus." body="Find student activities, see the details, and join the events that interest you." action={isAdmin ? 'Post an event' : undefined} onAction={isAdmin ? onCreate : undefined} />
     <div className="module-toolbar event-filter-toolbar">
       <div className="filter-pills">{categories.map(item => <button type="button" className={category === item ? 'selected' : ''} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div>
       <label className="search-field"><CalendarDays size={16} /><select aria-label="Filter events by date" value={dateRange} onChange={event => setDateRange(event.target.value)}><option value="upcoming">Upcoming</option><option value="past">Past events</option><option value="all">All dates</option></select></label>
     </div>
     {visibleEvents.length ? <div className="campus-event-grid">{visibleEvents.map(event => {
       const isRegistered = registered.includes(event.id)
-      const canRemove = isAdmin || (event.date && event.date < today && clubs.some(club => club.id === event.clubId && club.isMember))
       const eventDate = event.date
         ? new Date(`${event.date.slice(0, 10)}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
         : 'Date to be announced'
@@ -1130,7 +1106,7 @@ function Events({ events: eventItems, registered, clubs, isAdmin, onRegister, on
         <div className="campus-event-actions">
           <button type="button" className="button button-dark" disabled={!isRegistered && event.spots === 0} onClick={() => onRegister(event.id)}>{isRegistered ? 'Cancel registration' : event.spots === 0 ? 'Event full' : 'Register'}</button>
           <button type="button" className="button button-light" onClick={() => onOpen(event)}>View details</button>
-          {canRemove && <button type="button" className="text-button" onClick={() => onRemove(event.id)}>Remove event</button>}
+          {isAdmin && <button type="button" className="text-button" onClick={() => onRemove(event.id)}>Remove event</button>}
         </div>
       </article>
     })}</div> : <div className="empty-state"><strong>No events found</strong><span>Try another date or category, or post a new campus event.</span></div>}
@@ -1143,7 +1119,7 @@ const lumoraVideos = [
   'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260702_081042_df7202bf-bd80-4b2b-bbc6-1f09ba2870e9.mp4',
   'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260702_080959_4cac5234-3573-464e-a5b7-76b94b8a7d61.mp4',
 ]
-function LumoraEvents({ events, registered, clubs, isAdmin, onRegister, onOpen, onCreate, onRemove }) {
+function LumoraEvents({ events, registered, isAdmin, onRegister, onOpen, onCreate, onRemove }) {
   const [activeEvent, setActiveEvent] = useState(0)
   const [isTransitioning, setIsTransitioning] = useState(false)
   const [readyVideos, setReadyVideos] = useState([])
@@ -1151,9 +1127,6 @@ function LumoraEvents({ events, registered, clubs, isAdmin, onRegister, onOpen, 
   const cooldown = useRef(null)
   const event = events[activeEvent % Math.max(events.length, 1)]
   const activeVideo = activeEvent % lumoraVideos.length
-  const memberClubIds = clubs.filter(club => club.isMember).map(club => club.id)
-  const canRemove = isAdmin || (event?.date && event.date < new Date().toISOString().slice(0, 10) && memberClubIds.includes(event.clubId))
-
   useEffect(() => () => clearTimeout(cooldown.current), [])
   useEffect(() => setActiveEvent(index => events.length ? (index >= events.length - 1 ? events.length - 1 : index) : 0), [events.length])
 
@@ -1183,9 +1156,9 @@ function LumoraEvents({ events, registered, clubs, isAdmin, onRegister, onOpen, 
         <h1>{event.title}</h1>
         <p className="lumora-subtext">{event.description}</p>
         <div className="lumora-event-facts"><span>{event.time}</span><span>{event.place}</span></div>
-        <div className="lumora-actions"><button className="lumora-primary" disabled={!registered.includes(event.id) && event.spots === 0} onClick={() => onRegister(event.id)}>{registered.includes(event.id) ? 'Going' : event.spots === 0 ? 'Event full' : 'Join event'}<ArrowUpRight size={15} /></button><button className="lumora-secondary liquid-glass" onClick={() => onOpen(event)}>View details</button>{canRemove && <button className="lumora-secondary liquid-glass" onClick={() => onRemove(event.id)}>{isAdmin ? 'Remove event' : 'Remove past event'}</button>}</div>
-      </> : <><div className="lumora-badge liquid-glass">Campus events</div><h1>No events listed</h1><p className="lumora-subtext">An approved club member can post the next campus event.</p></>}
-      <button className="lumora-create-event" onClick={onCreate}><Plus size={14} /> Post a campus event</button>
+        <div className="lumora-actions"><button className="lumora-primary" disabled={!registered.includes(event.id) && event.spots === 0} onClick={() => onRegister(event.id)}>{registered.includes(event.id) ? 'Going' : event.spots === 0 ? 'Event full' : 'Join event'}<ArrowUpRight size={15} /></button><button className="lumora-secondary liquid-glass" onClick={() => onOpen(event)}>View details</button>{isAdmin && <button className="lumora-secondary liquid-glass" onClick={() => onRemove(event.id)}>Remove event</button>}</div>
+      </> : <><div className="lumora-badge liquid-glass">Campus events</div><h1>No events listed</h1><p className="lumora-subtext">{isAdmin ? 'Post the first campus event.' : 'Campus events will appear here when an administrator posts them.'}</p></>}
+      {isAdmin && <button className="lumora-create-event" onClick={onCreate}><Plus size={14} /> Post a campus event</button>}
       <div className="lumora-switcher" aria-label="Choose a campus event">{events.map((item, index) => <button type="button" key={item.id} className={index === activeEvent ? 'is-active' : ''} aria-current={index === activeEvent ? 'true' : undefined} onClick={() => selectEvent(index)}>{item.title}<span>{item.host}</span></button>)}</div>
     </main>
     {events.length > 1 && <div className="lumora-arrows"><button onClick={() => move(-1)} aria-label="Previous event">←</button><button onClick={() => move(1)} aria-label="Next event">→</button></div>}
@@ -1296,30 +1269,8 @@ function MostarEventsLayout({ events, registered, onRegister, onOpen }) {
 
 function EventCard({ event, registered, onRegister, onOpen }) { return <article className="event-card"><button className="event-image" onClick={onOpen}><img src={event.image} alt="" /><span className={`date-badge ${event.color}`}><b>{event.day}</b><small>{event.month}</small></span><span className="event-type">{event.type}</span></button><div className="event-body"><p className="eyebrow">{event.host}</p><h3>{event.title}</h3><div className="event-detail"><Clock3 size={15} /><span>{event.time}</span></div><div className="event-detail"><Compass size={15} /><span>{event.place}</span></div><div className="event-actions"><span>{event.spots} spots left</span><button className={`button ${registered ? 'button-success' : 'button-dark'}`} onClick={onRegister}>{registered ? <><Check size={15} /> Going</> : <>Join event <Ticket size={15} /></>}</button></div></div></article> }
 
-function Profile({ profile, onSave, clubs, onRequestClub, onApproveClubRequest }) {
-  return <>
-    <AccountHero profile={profile} onSave={onSave} />
-    <ClubMemberships clubs={clubs} onRequest={onRequestClub} onApprove={onApproveClubRequest} />
-  </>
-}
-
-function ClubMemberships({ clubs, onRequest, onApprove }) {
-  return <section className="account-clubs-panel">
-    <div className="account-clubs-heading"><div><p>STUDENT ORGANIZATIONS</p><h2>Campus clubs</h2></div><UsersRound size={22} /></div>
-    <div className="account-clubs-list">
-      {clubs.map(club => <article className="account-club-card" key={club.id}>
-        <div className="account-club-summary"><strong>{club.name}</strong><span>{club.isMember ? 'Member' : club.requestPending ? 'Membership requested' : 'Join the club to organize events'}</span></div>
-        {!club.isMember && !club.requestPending && <button onClick={() => onRequest(club.id)}>Request to join</button>}
-        {club.requestPending && <button disabled>Request pending</button>}
-        {club.isMember && <span className="account-club-member">Approved member</span>}
-        {club.canApproveRequests && club.pendingRequests.length > 0 && <div className="club-pending-requests">
-          <span>Membership requests</span>
-          {club.pendingRequests.map(joinRequest => <div key={joinRequest.id}><strong>{joinRequest.name}</strong><button onClick={() => onApprove(club.id, joinRequest.id)}>Approve</button></div>)}
-        </div>}
-      </article>)}
-    </div>
-    <p className="account-clubs-note">An administrator or a current club member approves requests. Only approved members can post or remove events for their club.</p>
-  </section>
+function Profile({ profile, onSave }) {
+  return <AccountHero profile={profile} onSave={onSave} />
 }
 
 function AccountHero({ profile, onSave }) {
@@ -1559,12 +1510,25 @@ function CreateListing({ listing, onClose, onSubmit }) {
 
 function OfferModal({ listing, onClose, onSubmit }) {
   const [message, setMessage] = useState(`Hi! I have a ${listing.title} and would be happy to help.`)
-  return <div className="modal-backdrop"><form className="modal offer-modal" onSubmit={event => { event.preventDefault(); onSubmit(message) }}>
-    <button type="button" className="modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
+  const [submitting, setSubmitting] = useState(false)
+  const submit = async event => {
+    event.preventDefault()
+    if (submitting) return
+    setSubmitting(true)
+    let succeeded = false
+    try {
+      succeeded = await onSubmit(message)
+    } finally {
+      setSubmitting(false)
+    }
+    if (succeeded) onClose()
+  }
+  return <div className="modal-backdrop"><form className="modal offer-modal" onSubmit={submit}>
+    <button type="button" className="modal-close" onClick={onClose} aria-label="Close" disabled={submitting}><X size={18} /></button>
     <p className="eyebrow">MESSAGE THE STUDENT</p><h2>Offer to help</h2>
     <p className="modal-copy">Send {listing.owner} a message about “{listing.title}”.</p>
-    <label>Your message<textarea autoFocus maxLength={1000} required rows={5} value={message} onChange={event => setMessage(event.target.value)} /></label>
-    <div className="modal-actions"><button type="button" className="button button-light" onClick={onClose}>Cancel</button><button className="button button-dark" type="submit">Send message <MessageCircle size={16} /></button></div>
+    <label>Your message<textarea autoFocus maxLength={1000} required rows={5} value={message} onChange={event => setMessage(event.target.value)} disabled={submitting} /></label>
+    <div className="modal-actions"><button type="button" className="button button-light" onClick={onClose} disabled={submitting}>Cancel</button><button className="button button-dark" type="submit" disabled={submitting}>{submitting ? 'Sending…' : 'Send message'} <MessageCircle size={16} /></button></div>
   </form></div>
 }
 
@@ -1634,9 +1598,8 @@ function EventModal({ event, registered, canViewGuestList, onClose, onRegister }
   </div>
 }
 
-function CreateEventModal({ clubs, isAdmin, onClose, onSubmit }) {
-  const memberClubs = clubs.filter(club => isAdmin || club.isMember)
-  const [draft, setDraft] = useState({ title: '', type: 'Campus event', date: '', time: '', place: '', description: '', capacity: '', clubId: memberClubs[0]?.id || '' })
+function CreateEventModal({ clubs, onClose, onSubmit }) {
+  const [draft, setDraft] = useState({ title: '', type: 'Campus event', date: '', time: '', place: '', description: '', capacity: '', clubId: clubs[0]?.id || '' })
   const [submitting, setSubmitting] = useState(false)
   const submit = async event => {
     event.preventDefault()
@@ -1650,9 +1613,9 @@ function CreateEventModal({ clubs, isAdmin, onClose, onSubmit }) {
   }
   return <div className="modal-backdrop"><form className="modal event-create-modal" onSubmit={submit}>
     <button type="button" className="modal-close" onClick={onClose} aria-label="Close"><X size={18} /></button>
-    <p className="eyebrow">ORGANIZE FOR YOUR CLUB</p><h2>Post a campus event</h2>
-    {memberClubs.length ? <>
-      <label>Organizing club<select required value={draft.clubId} onChange={event => setDraft({ ...draft, clubId: event.target.value })}>{memberClubs.map(club => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label>
+    <p className="eyebrow">CAMPUS ADMINISTRATION</p><h2>Post a campus event</h2>
+    {clubs.length ? <>
+      <label>Organizing club<select required value={draft.clubId} onChange={event => setDraft({ ...draft, clubId: event.target.value })}>{clubs.map(club => <option key={club.id} value={club.id}>{club.name}</option>)}</select></label>
       <label>Event name<input autoFocus required maxLength={100} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} placeholder="e.g. Campus workshop" /></label>
       <label>Event type<input required maxLength={60} value={draft.type} onChange={event => setDraft({ ...draft, type: event.target.value })} /></label>
       <label>Date<input type="date" min={new Date().toISOString().slice(0, 10)} required value={draft.date} onChange={event => setDraft({ ...draft, date: event.target.value })} /></label>
@@ -1660,9 +1623,9 @@ function CreateEventModal({ clubs, isAdmin, onClose, onSubmit }) {
       <label>Location<input required maxLength={120} value={draft.place} onChange={event => setDraft({ ...draft, place: event.target.value })} placeholder="Campus venue" /></label>
       <label>Capacity (optional)<input type="number" min="1" max="5000" step="1" value={draft.capacity} onChange={event => setDraft({ ...draft, capacity: event.target.value })} placeholder="Leave blank for unlimited registration" /></label>
       <label>Details (optional)<textarea rows={3} maxLength={500} value={draft.description} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label>
-      <p className="modal-copy">Each club can list up to two upcoming events at a time.</p>
+      <p className="modal-copy">Each club can list up to two upcoming events at a time. Only administrators can post campus events.</p>
       <div className="modal-actions"><button type="button" className="button button-light" onClick={onClose} disabled={submitting}>Cancel</button><button className="button button-dark" type="submit" disabled={submitting}>{submitting ? 'Posting event…' : <>Post event <ArrowUpRight size={16} /></>}</button></div>
-    </> : <><p className="modal-copy">You need approved membership in a club before you can post its events. Request membership from your profile.</p><div className="modal-actions"><button type="button" className="button button-dark" onClick={onClose}>Close</button></div></>}
+    </> : <><p className="modal-copy">No organizing clubs are available.</p><div className="modal-actions"><button type="button" className="button button-dark" onClick={onClose}>Close</button></div></>}
   </form></div>
 }
 
